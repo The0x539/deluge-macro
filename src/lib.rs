@@ -212,3 +212,45 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
 
     the_impl.into()
 }
+
+#[proc_macro_attribute]
+pub fn option_struct(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut item = parse_macro_input!(item as ItemStruct);
+
+    let name = &item.ident;
+
+    for field in &mut item.fields {
+        let ty = &field.ty;
+        field.ty = parse_quote!(::core::option::Option<#ty>);
+    }
+
+    let fields = item.fields
+        .iter()
+        .map(|field| field.ident.as_ref().expect("fields must be named"));
+
+    let fields2 = fields.clone(); // uh, what?
+
+    let the_impl = quote! {
+        impl ::serde::ser::Serialize for #name {
+            fn serialize<S: ::serde::ser::Serializer>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error> {
+                use serde::ser::{Serializer, SerializeMap};
+                let mut count = 0;
+                #(if self.#fields.is_some() { count += 1; })*
+
+                let mut map = serializer.serialize_map(Some(count))?;
+                #(match self.#fields2 {
+                    Some(ref v) => map.serialize_entry(stringify!(#fields2), v)?,
+                    None => (),
+                };)*
+
+                map.end()
+            }
+        }
+    };
+
+    let mut stream = TokenStream2::new();
+    item.to_tokens(&mut stream);
+    the_impl.to_tokens(&mut stream);
+
+    stream.into()
+}
