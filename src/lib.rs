@@ -11,10 +11,14 @@ use syn::{
     TraitItemMethod,
     Meta,
     Visibility,
+    TypePath,
     Lit,
     ItemStruct,
     Signature,
     NestedMeta,
+    PathArguments,
+    AngleBracketedGenericArguments,
+    GenericArgument,
     ReturnType,
     Block,
     Pat,
@@ -51,6 +55,20 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
                     ty = elem;
                     quote!(expect_seq)
                 },
+                Type::Path(TypePath { path, .. })
+                  if path.segments.first().map(|s| &s.ident)
+                  == Some(&parse_quote!(Option)) => {
+                    ty = match path.segments.first().unwrap().arguments {
+                        PathArguments::AngleBracketed(ref args) => match args {
+                            AngleBracketedGenericArguments { args, .. } => match args.first().unwrap() {
+                                GenericArgument::Type(x) => x,
+                                _ => panic!(),
+                            }
+                        },
+                        _ => panic!(),
+                    };
+                    quote!(expect_option)
+                },
                 _ => quote!(expect_val)
             };
 
@@ -62,6 +80,8 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
                 quote!(m @ Value::Object(_), "torrent status", serde_json::from_value(m).unwrap())
             } else if ty == &parse_quote!(String) {
                 quote!(Value::String(s), "a string", s)
+            } else if ty == &parse_quote!(InfoHash) {
+                quote!(Value::String(s), "an infohash", s)
             } else if ty == &parse_quote!(i64) {
                 quote!(Value::Number(num), "a number", match num.as_i64() {
                     Some(n) => n,
