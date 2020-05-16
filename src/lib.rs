@@ -1,4 +1,5 @@
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 
 use syn::{
     parse_macro_input,
@@ -9,15 +10,16 @@ use syn::{
     Attribute,
     TraitItemMethod,
     Meta,
-    punctuated::Pair,
     Visibility,
     Lit,
+    TypeParam,
     Signature,
     NestedMeta,
     ReturnType,
     Block,
     Pat,
     Expr,
+    GenericParam,
 };
 use quote::{quote, ToTokens};
 
@@ -37,7 +39,7 @@ impl Parse for RpcMethod {
     }
 }
 
-fn make_ret_expr(ret_type: &ReturnType) -> proc_macro2::TokenStream {
+fn make_ret_expr(ret_type: &ReturnType) -> TokenStream2 {
     match ret_type {
         ReturnType::Default => quote!(expect_nothing!(val)),
         ReturnType::Type(_, t) => {
@@ -45,6 +47,8 @@ fn make_ret_expr(ret_type: &ReturnType) -> proc_macro2::TokenStream {
                 quote!(expect_val!(val, Value::Null, "None", ()))
             } else if t == &parse_quote!(Dict) {
                 quote!(expect_val!(val, Value::Object(m), "a dict", m.into_iter().collect()))
+            } else if t == &parse_quote!(T) { // FIXME: actually check whether it's the Query
+                quote!(expect_val!(val, m @ Value::Object(_), "torrent status", serde_json::from_value(m).unwrap()))
             } else {
                 todo!()
             }
@@ -77,18 +81,10 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     
     let mut method = parse_macro_input!(item as RpcMethod);
 
-    let ret_type = method.sig.output;
-
-    method.sig.output = match &ret_type {
-        ReturnType::Default        => parse_quote!(-> Result<()>),
-        ReturnType::Type(_, ref t) => parse_quote!(-> Result<#t>),
-    };
-
     let method_name = format!("{}.{}", rpc_class.expect("must specify an rpc class"), method.sig.ident);
 
     let args: Vec<Expr> = method.sig.inputs
-        .pairs()
-        .map(|pair| match pair { Pair::Punctuated(arg, _) | Pair::End(arg) => arg })
+        .iter()
         .skip(1)
         .map(|arg| match arg { FnArg::Typed(pt) => pt.pat.clone(), _ => unreachable!() })
         .map(|arg| match arg.as_ref().clone() { Pat::Ident(id) => id.ident.clone(), _ => panic!("args must just be names") })
@@ -96,15 +92,38 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|ident| parse_quote!(#ident))
         .collect();
 
+    let mut kwargs = Vec::new();
+
+    let ret_type = method.sig.output;
+    method.sig.output = match ret_type {
+        ReturnType::Default => parse_quote!(-> Result<()>),
+        ReturnType::Type(_, ref t) => parse_quote!(-> Result<#t>),
+    };
+
+    let generics = method.sig.generics.params
+        .iter()
+        .filter_map(|param| match param {
+            GenericParam::Type(TypeParam { ident, bounds, .. }) => Some((ident, bounds)),
+            _ => None,
+        });
+
+    for (ident, bounds) in generics {
+        for bound in bounds {
+            if bound == &parse_quote!(Query) {
+                kwargs.push(quote!("keys" => #ident::keys()));
+            }
+        }
+    }
+
     let ret_expr = make_ret_expr(&ret_type);
 
     let body: Block = parse_quote!({
         assert!(self.auth_level >= #auth_level);
-        let val = make_request!(self, #method_name, [#(#args),*]);
+        let val = make_request!(self, #method_name, [#(#args),*], {#(#kwargs),*});
         return #ret_expr;
     });
 
-    let mut stream = proc_macro2::TokenStream::new();
+    let mut stream = TokenStream2::new();
     method.attrs.into_iter().for_each(|attr| attr.to_tokens(&mut stream));
     method.vis.to_tokens(&mut stream);
     method.sig.to_tokens(&mut stream);
