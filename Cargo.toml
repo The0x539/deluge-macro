@@ -1,0 +1,13 @@
+[package]
+name = "deluge-macro"
+version = "0.1.0"
+authors = ["The0x539 <the0x539@gmail.com>"]
+edition = "2018"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "1.0.21", features = ["full", "extra-traits", "printing"] }
+quote = "1.0.5"
+proc-macro2 = "1.0.13"
