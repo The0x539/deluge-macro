@@ -29,19 +29,19 @@ struct RpcMethod {
     attrs: Vec<Attribute>,
     vis: Visibility,
     sig: Signature,
+    body: Option<Block>,
 }
 
 impl Parse for RpcMethod {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(Self {
-            attrs: input.call(Attribute::parse_outer)?,
-            vis: input.parse()?,
-            sig: input.parse::<TraitItemMethod>()?.sig, // sue me
-        })
+        let attrs = input.call(Attribute::parse_outer)?;
+        let vis = input.parse()?;
+        let method: TraitItemMethod = input.parse()?;
+        Ok(Self { attrs, vis, sig: method.sig, body: method.default })
     }
 }
 
-fn make_ret_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStream2 {
+fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStream2 {
     match ret_type {
         ReturnType::Default => quote!(expect_nothing!(val)),
         ReturnType::Type(_, ref t) => {
@@ -54,24 +54,28 @@ fn make_ret_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
                 _ => quote!(expect_val)
             };
 
-            if ty == &parse_quote!(()) {
-                quote!(#expect!(val, Value::Null, "None", ()))
+            let expectation = if ty == &parse_quote!(()) {
+                quote!(Value::Null, "None", ())
             } else if ty == &parse_quote!(Dict) {
-                quote!(#expect!(val, Value::Object(m), "a dict", m.into_iter().collect()))
+                quote!(Value::Object(m), "a dict", m.into_iter().collect())
             } else if query_type.is_some() && ty == &parse_quote!(#query_type) {
-                quote!(#expect!(val, m @ Value::Object(_), "torrent status", serde_json::from_value(m).unwrap()))
+                quote!(m @ Value::Object(_), "torrent status", serde_json::from_value(m).unwrap())
             } else if ty == &parse_quote!(String) {
-                quote!(#expect!(val, Value::String(s), "a string", s))
+                quote!(Value::String(s), "a string", s)
             } else {
                 todo!()
-            }
+            };
+
+            quote!(#expect!(__response, #expectation))
         }
     }
 }
 
 #[proc_macro_attribute]
 pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let RpcMethod { attrs, vis, mut sig } = parse_macro_input!(item as RpcMethod);
+    let RpcMethod { attrs, vis, mut sig, body } = parse_macro_input!(item as RpcMethod);
+
+    let mut kwargs = Vec::new();
 
     let mut class = None;
     let mut name: TokenTree2 = sig.ident.clone().into();
@@ -92,7 +96,11 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
                         Lit::Int(i) => i.base10_parse().unwrap(),
                         x => panic!("unexpected auth_level value: {:?}", x),
                     },
-                    x => panic!("unexepcted attribute arg: {:?}", x),
+                    // This doesn't seem like the best idea, but whatever.
+                    kwkey => {
+                        let kwarg = mnv.lit;
+                        kwargs.push(quote!(#kwkey => #kwarg));
+                    }
                 }
             },
             x => panic!("unexpected attribute arg: {:?}", x),
@@ -107,8 +115,6 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         // okay, now we have Idents
         .map(|ident| parse_quote!(#ident))
         .collect();
-
-    let mut kwargs = Vec::new();
 
     let ret_type = sig.output;
     sig.output = match ret_type {
@@ -138,14 +144,17 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    let ret_expr = make_ret_expr(&ret_type, &query_type);
+    let val_expr = make_val_expr(&ret_type, &query_type);
 
     let method_name = format!("{}.{}", class.expect("must specify an RPC class"), name);
 
+    let ret_block = body.unwrap_or(parse_quote!( { return val; } ));
+
     let body: Block = parse_quote!({
         assert!(self.auth_level >= #auth_level);
-        let val = make_request!(self, #method_name, [#(#args),*], {#(#kwargs),*});
-        return #ret_expr;
+        let __response = make_request!(self, #method_name, [#(#args),*], {#(#kwargs),*});
+        let val = #val_expr;
+        #ret_block
     });
 
     let mut stream = TokenStream2::new();
