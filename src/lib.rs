@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
+use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
 
 use syn::{
     parse_macro_input,
@@ -71,15 +71,22 @@ fn make_ret_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
 
 #[proc_macro_attribute]
 pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut rpc_class: Option<String> = None;
+    let RpcMethod { attrs, vis, mut sig } = parse_macro_input!(item as RpcMethod);
+
+    let mut class = None;
+    let mut name: TokenTree2 = sig.ident.clone().into();
     let mut auth_level: i64 = 0;
     for arg in parse_macro_input!(attr as AttributeArgs) {
         match arg {
             NestedMeta::Meta(Meta::NameValue(mnv)) => {
                 match mnv.path.get_ident().expect("unexpected path").to_string().as_str() {
-                    "class" => rpc_class = match mnv.lit {
+                    "class" => class = match mnv.lit {
                         Lit::Str(s) => Some(s.value()),
                         x => panic!("unexpected class value: {:?}", x),
+                    },
+                    "method" => name = match mnv.lit {
+                        Lit::Str(s) => s.parse().unwrap(),
+                        x => panic!("unexpected method name value: {:?}", x),
                     },
                     "auth_level" => auth_level = match mnv.lit {
                         Lit::Int(i) => i.base10_parse().unwrap(),
@@ -91,12 +98,8 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
             x => panic!("unexpected attribute arg: {:?}", x),
         }
     }
-    
-    let mut method = parse_macro_input!(item as RpcMethod);
 
-    let method_name = format!("{}.{}", rpc_class.expect("must specify an rpc class"), method.sig.ident);
-
-    let args: Vec<Expr> = method.sig.inputs
+    let args: Vec<Expr> = sig.inputs
         .iter()
         .skip(1)
         .map(|arg| match arg { FnArg::Typed(pt) => pt.pat.clone(), _ => unreachable!() })
@@ -107,16 +110,16 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut kwargs = Vec::new();
 
-    let ret_type = method.sig.output;
-    method.sig.output = match ret_type {
+    let ret_type = sig.output;
+    sig.output = match ret_type {
         ReturnType::Default => parse_quote!(-> Result<()>),
         ReturnType::Type(_, ref t) => match t.as_ref() {
             Type::Slice(TypeSlice { elem, .. }) => {
-                if method.sig.generics.lt_token.is_none() {
-                    method.sig.generics.lt_token = parse_quote!(<);
-                    method.sig.generics.gt_token = parse_quote!(>);
+                if sig.generics.lt_token.is_none() {
+                    sig.generics.lt_token = parse_quote!(<);
+                    sig.generics.gt_token = parse_quote!(>);
                 }
-                method.sig.generics.params .push(parse_quote!(__I: FromIterator<#elem>));
+                sig.generics.params .push(parse_quote!(__I: FromIterator<#elem>));
                 parse_quote!(-> Result<__I>)
             }
             _ => parse_quote!(-> Result<#t>)
@@ -125,7 +128,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut query_type = None;
 
-    for type_param in method.sig.generics.type_params() {
+    for type_param in sig.generics.type_params() {
         for bound in &type_param.bounds {
             if bound == &parse_quote!(Query) {
                 let ident = &type_param.ident;
@@ -137,6 +140,8 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let ret_expr = make_ret_expr(&ret_type, &query_type);
 
+    let method_name = format!("{}.{}", class.expect("must specify an RPC class"), name);
+
     let body: Block = parse_quote!({
         assert!(self.auth_level >= #auth_level);
         let val = make_request!(self, #method_name, [#(#args),*], {#(#kwargs),*});
@@ -144,10 +149,11 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
 
     let mut stream = TokenStream2::new();
-    method.attrs.into_iter().for_each(|attr| attr.to_tokens(&mut stream));
-    method.vis.to_tokens(&mut stream);
-    method.sig.to_tokens(&mut stream);
+    attrs.into_iter().for_each(|attr| attr.to_tokens(&mut stream));
+    vis.to_tokens(&mut stream);
+    sig.to_tokens(&mut stream);
     body.to_tokens(&mut stream);
+
     stream.into()
 }
 
