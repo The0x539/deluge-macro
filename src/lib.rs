@@ -2,18 +2,22 @@ use proc_macro::TokenStream;
 
 use syn::{
     parse_macro_input,
+    FnArg,
     parse_quote,
     parse::{Parse, ParseStream},
     AttributeArgs,
     Attribute,
     TraitItemMethod,
     Meta,
+    punctuated::Pair,
     Visibility,
     Lit,
     Signature,
     NestedMeta,
     ReturnType,
     Block,
+    Pat,
+    Expr,
 };
 use quote::{quote, ToTokens};
 
@@ -82,11 +86,21 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let method_name = format!("{}.{}", rpc_class.expect("must specify an rpc class"), method.sig.ident);
 
+    let args: Vec<Expr> = method.sig.inputs
+        .pairs()
+        .map(|pair| match pair { Pair::Punctuated(arg, _) | Pair::End(arg) => arg })
+        .skip(1)
+        .map(|arg| match arg { FnArg::Typed(pt) => pt.pat.clone(), _ => unreachable!() })
+        .map(|arg| match arg.as_ref().clone() { Pat::Ident(id) => id.ident.clone(), _ => panic!("args must just be names") })
+        // okay, now we have Idents
+        .map(|ident| parse_quote!(#ident))
+        .collect();
+
     let ret_expr = make_ret_expr(&ret_type);
 
     let body: Block = parse_quote!({
         assert!(self.auth_level >= #auth_level);
-        let val = make_request!(self, #method_name, []);
+        let val = make_request!(self, #method_name, [#(#args),*]);
         return #ret_expr;
     });
 
