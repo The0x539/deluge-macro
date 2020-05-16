@@ -62,6 +62,11 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
                 quote!(m @ Value::Object(_), "torrent status", serde_json::from_value(m).unwrap())
             } else if ty == &parse_quote!(String) {
                 quote!(Value::String(s), "a string", s)
+            } else if ty == &parse_quote!(i64) {
+                quote!(Value::Number(num), "a number", match num.as_i64() {
+                    Some(n) => n,
+                    None => return Err(Error::expected("an i64", Value::Number(num.clone()))),
+                })
             } else {
                 todo!()
             };
