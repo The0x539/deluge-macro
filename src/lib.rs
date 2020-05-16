@@ -21,6 +21,7 @@ use syn::{
     Pat,
     Expr,
     GenericParam,
+    Ident,
 };
 use quote::{quote, ToTokens};
 
@@ -40,7 +41,7 @@ impl Parse for RpcMethod {
     }
 }
 
-fn make_ret_expr(ret_type: &ReturnType) -> TokenStream2 {
+fn make_ret_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStream2 {
     match ret_type {
         ReturnType::Default => quote!(expect_nothing!(val)),
         ReturnType::Type(_, t) => {
@@ -48,7 +49,7 @@ fn make_ret_expr(ret_type: &ReturnType) -> TokenStream2 {
                 quote!(expect_val!(val, Value::Null, "None", ()))
             } else if t == &parse_quote!(Dict) {
                 quote!(expect_val!(val, Value::Object(m), "a dict", m.into_iter().collect()))
-            } else if t == &parse_quote!(T) { // FIXME: actually check whether it's the Query
+            } else if t == &parse_quote!(#query_type) {
                 quote!(expect_val!(val, m @ Value::Object(_), "torrent status", serde_json::from_value(m).unwrap()))
             } else {
                 todo!()
@@ -101,6 +102,8 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         ReturnType::Type(_, ref t) => parse_quote!(-> Result<#t>),
     };
 
+    let mut query_type = None;
+
     let generics = method.sig.generics.params
         .iter()
         .filter_map(|param| match param {
@@ -111,12 +114,13 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     for (ident, bounds) in generics {
         for bound in bounds {
             if bound == &parse_quote!(Query) {
+                query_type = Some(ident);
                 kwargs.push(quote!("keys" => #ident::keys()));
             }
         }
     }
 
-    let ret_expr = make_ret_expr(&ret_type);
+    let ret_expr = make_ret_expr(&ret_type, &query_type);
 
     let body: Block = parse_quote!({
         assert!(self.auth_level >= #auth_level);
