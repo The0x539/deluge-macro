@@ -12,6 +12,7 @@ use syn::{
     Meta,
     Visibility,
     Lit,
+    ItemStruct,
     TypeParam,
     Signature,
     NestedMeta,
@@ -129,4 +130,26 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     method.sig.to_tokens(&mut stream);
     body.to_tokens(&mut stream);
     stream.into()
+}
+
+#[proc_macro_derive(Query)]
+pub fn derive_query(item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemStruct);
+
+    let name = item.ident;
+
+    let fields = item.fields
+        .iter()
+        .map(|field| field.ident.as_ref().expect("fields must be named"));
+
+    let the_impl = quote! {
+        // TODO: hygiene
+        impl session::Query for #name {
+            fn keys() -> &'static [&'static str] {
+                &[#(stringify!(#fields)),*]
+            }
+        }
+    };
+
+    the_impl.into()
 }
