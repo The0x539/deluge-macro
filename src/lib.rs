@@ -13,15 +13,15 @@ use syn::{
     Visibility,
     Lit,
     ItemStruct,
-    TypeParam,
     Signature,
     NestedMeta,
     ReturnType,
     Block,
     Pat,
     Expr,
-    GenericParam,
     Ident,
+    TypeSlice,
+    Type,
 };
 use quote::{quote, ToTokens};
 
@@ -44,13 +44,24 @@ impl Parse for RpcMethod {
 fn make_ret_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStream2 {
     match ret_type {
         ReturnType::Default => quote!(expect_nothing!(val)),
-        ReturnType::Type(_, t) => {
-            if t == &parse_quote!(()) {
-                quote!(expect_val!(val, Value::Null, "None", ()))
-            } else if t == &parse_quote!(Dict) {
-                quote!(expect_val!(val, Value::Object(m), "a dict", m.into_iter().collect()))
-            } else if t == &parse_quote!(#query_type) {
-                quote!(expect_val!(val, m @ Value::Object(_), "torrent status", serde_json::from_value(m).unwrap()))
+        ReturnType::Type(_, ref t) => {
+            let mut ty: &Type = t.as_ref();
+            let expect = match ty {
+                Type::Slice(TypeSlice { elem, .. }) => {
+                    ty = elem;
+                    quote!(expect_seq)
+                },
+                _ => quote!(expect_val)
+            };
+
+            if ty == &parse_quote!(()) {
+                quote!(#expect!(val, Value::Null, "None", ()))
+            } else if ty == &parse_quote!(Dict) {
+                quote!(#expect!(val, Value::Object(m), "a dict", m.into_iter().collect()))
+            } else if query_type.is_some() && ty == &parse_quote!(#query_type) {
+                quote!(#expect!(val, m @ Value::Object(_), "torrent status", serde_json::from_value(m).unwrap()))
+            } else if ty == &parse_quote!(String) {
+                quote!(#expect!(val, Value::String(s), "a string", s))
             } else {
                 todo!()
             }
@@ -99,21 +110,25 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let ret_type = method.sig.output;
     method.sig.output = match ret_type {
         ReturnType::Default => parse_quote!(-> Result<()>),
-        ReturnType::Type(_, ref t) => parse_quote!(-> Result<#t>),
+        ReturnType::Type(_, ref t) => match t.as_ref() {
+            Type::Slice(TypeSlice { elem, .. }) => {
+                if method.sig.generics.lt_token.is_none() {
+                    method.sig.generics.lt_token = parse_quote!(<);
+                    method.sig.generics.gt_token = parse_quote!(>);
+                }
+                method.sig.generics.params .push(parse_quote!(__I: FromIterator<#elem>));
+                parse_quote!(-> Result<__I>)
+            }
+            _ => parse_quote!(-> Result<#t>)
+        },
     };
 
     let mut query_type = None;
 
-    let generics = method.sig.generics.params
-        .iter()
-        .filter_map(|param| match param {
-            GenericParam::Type(TypeParam { ident, bounds, .. }) => Some((ident, bounds)),
-            _ => None,
-        });
-
-    for (ident, bounds) in generics {
-        for bound in bounds {
+    for type_param in method.sig.generics.type_params() {
+        for bound in &type_param.bounds {
             if bound == &parse_quote!(Query) {
+                let ident = &type_param.ident;
                 query_type = Some(ident);
                 kwargs.push(quote!("keys" => #ident::keys()));
             }
