@@ -51,7 +51,7 @@ fn make_ret_expr(ret_type: &ReturnType) -> proc_macro2::TokenStream {
 #[proc_macro_attribute]
 pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut rpc_class: Option<String> = None;
-    let mut auth_level: u8 = 0;
+    let mut auth_level: i64 = 0;
     for arg in parse_macro_input!(attr as AttributeArgs) {
         match arg {
             NestedMeta::Meta(Meta::NameValue(mnv)) => {
