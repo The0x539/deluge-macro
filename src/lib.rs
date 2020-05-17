@@ -49,7 +49,7 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
     match ret_type {
         ReturnType::Default => quote!(expect_nothing!(val)),
         ReturnType::Type(_, ref t) => {
-            let mut ty: &Type = t.as_ref();
+            let mut ty: &Type = t;
             let expect = match ty {
                 Type::Slice(TypeSlice { elem, .. }) => {
                     ty = elem;
@@ -87,6 +87,8 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
                     Some(n) => n,
                     None => return Err(Error::expected("an i64", Value::Number(num.clone()))),
                 })
+            } else if ty == &parse_quote!(bool) {
+                quote!(Value::Bool(b), "a boolean", b)
             } else {
                 todo!()
             };
@@ -141,8 +143,21 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|ident| parse_quote!(#ident))
         .collect();
 
-    let ret_type = sig.output;
-    sig.output = match ret_type {
+    let mut query_type = None;
+
+    for type_param in sig.generics.type_params() {
+        for bound in &type_param.bounds {
+            if bound == &parse_quote!(Query) {
+                let ident = &type_param.ident;
+                query_type = Some(ident);
+                kwargs.push(quote!("keys" => #ident::keys()));
+            }
+        }
+    }
+
+    let val_expr = make_val_expr(&sig.output, &query_type);
+
+    sig.output = match sig.output {
         ReturnType::Default => parse_quote!(-> Result<()>),
         ReturnType::Type(_, ref t) => match t.as_ref() {
             Type::Slice(TypeSlice { elem, .. }) => {
@@ -156,20 +171,6 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
             _ => parse_quote!(-> Result<#t>)
         },
     };
-
-    let mut query_type = None;
-
-    for type_param in sig.generics.type_params() {
-        for bound in &type_param.bounds {
-            if bound == &parse_quote!(Query) {
-                let ident = &type_param.ident;
-                query_type = Some(ident);
-                kwargs.push(quote!("keys" => #ident::keys()));
-            }
-        }
-    }
-
-    let val_expr = make_val_expr(&ret_type, &query_type);
 
     let method_name = format!("{}.{}", class.expect("must specify an RPC class"), name);
 
