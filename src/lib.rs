@@ -246,7 +246,7 @@ pub fn value_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let name = &item.ident;
 
-    item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]));
+    item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]));
     item.attrs.push(parse_quote!(#[serde(try_from = #ty_str, into = #ty_str)]));
 
     let (variants, discriminants) = item.variants
@@ -257,7 +257,7 @@ pub fn value_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
     let error_fmt = format!("Invalid {} value: {{:?}}", name);
 
     let the_impl = quote! {
-        impl TryFrom<#ty> for #name {
+        impl ::core::convert::TryFrom<#ty> for #name {
             type Error = ::std::string::String;
             fn try_from(value: #ty) -> ::core::result::Result<Self, Self::Error> {
                 match value {
@@ -266,7 +266,12 @@ pub fn value_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         }
-        impl Into<#ty> for #name { fn into(self) -> #ty { self as #ty } }
+        impl ::core::convert::Into<#ty> for #name { fn into(self) -> #ty { self as #ty } }
+        impl ::core::fmt::Display for #name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+                ::core::fmt::Debug::fmt(self, f)
+            }
+        }
     };
 
     let mut stream = TokenStream2::new();
