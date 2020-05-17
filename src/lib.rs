@@ -147,7 +147,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let ret_block = body.unwrap_or(parse_quote!( { return Ok(val); } ));
 
     let body: Block = parse_quote!({
-        assert!(self.auth_level as u8 >= AuthLevel::#auth_level as u8);
+        assert!(self.auth_level >= AuthLevel::#auth_level);
         let __response = make_request!(self, #method_name, [#(#args),*], {#(#kwargs),*});
         let val = #val_expr?;
         #ret_block
