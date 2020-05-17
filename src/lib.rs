@@ -6,6 +6,7 @@ use syn::{
     FnArg,
     parse_quote,
     parse::{Parse, ParseStream},
+    ItemEnum,
     AttributeArgs,
     Attribute,
     TraitItemMethod,
@@ -219,6 +220,49 @@ pub fn option_struct(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 map.end()
             }
         }
+    };
+
+    let mut stream = TokenStream2::new();
+    item.to_tokens(&mut stream);
+    the_impl.to_tokens(&mut stream);
+
+    stream.into()
+}
+
+#[proc_macro_attribute]
+pub fn value_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let ty: Type = match parse_macro_input!(attr as AttributeArgs).first().expect("must specify a type") {
+        NestedMeta::Meta(Meta::Path(p)) => parse_quote!(#p),
+        x => panic!("expected a type, got {:?}", x),
+    };
+
+    let ty_str: String = ty.to_token_stream().to_string();
+
+    let mut item = parse_macro_input!(item as ItemEnum);
+
+    let name = &item.ident;
+
+    item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]));
+    item.attrs.push(parse_quote!(#[serde(try_from = #ty_str, into = #ty_str)]));
+
+    let (variants, discriminants) = item.variants
+        .iter()
+        .map(|v| (&v.ident, &v.discriminant.as_ref().expect("every variant must have a discriminant").1))
+        .unzip::<_, _, Vec<&Ident>, Vec<&Expr>>();
+
+    let error_fmt = format!("Invalid {} value: {{:?}}", name);
+
+    let the_impl = quote! {
+        impl TryFrom<#ty> for #name {
+            type Error = ::std::string::String;
+            fn try_from(value: #ty) -> ::core::result::Result<Self, Self::Error> {
+                match value {
+                    #(#discriminants => Ok(Self::#variants),)*
+                    _ => Err(format!(#error_fmt, value)),
+                }
+            }
+        }
+        impl Into<#ty> for #name { fn into(self) -> #ty { self as #ty } }
     };
 
     let mut stream = TokenStream2::new();
