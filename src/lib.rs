@@ -59,7 +59,7 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
                     quote!(expect_seq)
                 },
                 Type::Path(TypePath { path, .. }) =>  {
-                    let t = path.segments.first().unwrap();
+                    let t = path.segments.last().unwrap();
                     if &t.ident == (&parse_quote!(Option) as &Ident) {
                         ty = match t.arguments {
                             PathArguments::AngleBracketed(ref args) => match args {
@@ -87,7 +87,10 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
             } else if ty == &parse_quote!(String) {
                 quote!(Value::String(s), "a string", s)
             } else if ty == &parse_quote!(InfoHash) {
-                quote!(Value::String(s), "an infohash", s)
+                quote!(Value::String(s), "an infohash", match InfoHash::from_hex(&s) {
+                    Some(hash) => hash,
+                    None => return Err(Error::expected("an infohash", s)),
+                })
             } else if ty == &parse_quote!(i64) {
                 quote!(Value::Number(num), "a number", match num.as_i64() {
                     Some(n) => n,
@@ -102,7 +105,12 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
                 quote!(
                     Value::Object(m),
                     "a map of infohashes to torrent status",
-                    m.into_iter().map(|(hash, status)| (hash, serde_json::from_value(status).unwrap())).collect()
+                    m.into_iter()
+                        .map(|(s, status)| match InfoHash::from_hex(&s) {
+                            Some(hash) => Ok((hash, serde_json::from_value(status).unwrap())),
+                            None => Err(Error::expected("an infohash", s)),
+                        })
+                        .collect::<Result<__I>>()?
                 )
             } else {
                 todo!("{:?}", ty)
