@@ -96,6 +96,11 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
                     Some(n) => n,
                     None => return Err(Error::expected("an i64", Value::Number(num.clone()))),
                 })
+            } else if ty == &parse_quote!(AuthLevel) {
+                quote!(Value::Number(num), "an auth level", match num.as_u64() {
+                    Some(n) if n <= (u8::MAX as u64) && AuthLevel::try_from(n as u8).is_ok() => AuthLevel::try_from(n as u8).unwrap(),
+                    x => return Err(Error::expected("an auth level", Value::Number(num.clone()))),
+                })
             } else if ty == &parse_quote!(bool) {
                 quote!(Value::Bool(b), "a boolean", b)
             } else if query_type.is_some() && ty == &parse_quote!(Map<InfoHash, #query_type>) {
@@ -137,7 +142,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut class = String::from("core");
     let mut name: TokenTree2 = sig.ident.clone().into();
-    let mut auth_level: i64 = 5;
+    let mut auth_level = quote!(default());
     for arg in parse_macro_input!(attr as AttributeArgs) {
         match arg {
             NestedMeta::Meta(Meta::NameValue(mnv)) => {
@@ -151,7 +156,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
                         x => panic!("unexpected method name value: {:?}", x),
                     },
                     "auth_level" => auth_level = match mnv.lit {
-                        Lit::Int(i) => i.base10_parse().unwrap(),
+                        Lit::Str(s) => { let s: Ident = s.parse().unwrap(); quote!(#s) }
                         x => panic!("unexpected auth_level value: {:?}", x),
                     },
                     // This doesn't seem like the best idea, but whatever.
@@ -221,7 +226,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let ret_block = body.unwrap_or(parse_quote!( { return Ok(val); } ));
 
     let body: Block = parse_quote!({
-        assert!(self.auth_level >= #auth_level);
+        assert!(self.auth_level as u8 >= AuthLevel::#auth_level as u8);
         let __response = make_request!(self, #method_name, [#(#args),*], {#(#kwargs),*});
         let val = #val_expr?;
         #ret_block
