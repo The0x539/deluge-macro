@@ -12,6 +12,7 @@ use syn::{
     Meta,
     Visibility,
     TypePath,
+    PathSegment,
     Lit,
     ItemStruct,
     Signature,
@@ -48,26 +49,29 @@ impl Parse for RpcMethod {
 fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStream2 {
     match ret_type {
         ReturnType::Default => quote!(expect_nothing!(val)),
-        ReturnType::Type(_, ref t) => {
-            let mut ty: &Type = t;
+        ReturnType::Type(_, ref ty) => {
+            let mut ty: &Type = ty;
             let expect = match ty {
                 Type::Slice(TypeSlice { elem, .. }) => {
                     ty = elem;
                     quote!(expect_seq)
                 },
-                Type::Path(TypePath { path, .. })
-                  if path.segments.first().map(|s| &s.ident)
-                  == Some(&parse_quote!(Option)) => {
-                    ty = match path.segments.first().unwrap().arguments {
-                        PathArguments::AngleBracketed(ref args) => match args {
-                            AngleBracketedGenericArguments { args, .. } => match args.first().unwrap() {
-                                GenericArgument::Type(x) => x,
-                                _ => panic!(),
-                            }
-                        },
-                        _ => panic!(),
-                    };
-                    quote!(expect_option)
+                Type::Path(TypePath { path, .. }) =>  {
+                    let t = path.segments.first().unwrap();
+                    if &t.ident == (&parse_quote!(Option) as &Ident) {
+                        ty = match t.arguments {
+                            PathArguments::AngleBracketed(ref args) => match args {
+                                AngleBracketedGenericArguments { args, .. } => match args.first().unwrap() {
+                                    GenericArgument::Type(x) => x,
+                                    _ => panic!(),
+                                }
+                            },
+                            _ => panic!()
+                        };
+                        quote!(expect_option)
+                    } else {
+                        quote!(expect_val)
+                    }
                 },
                 _ => quote!(expect_val)
             };
@@ -89,8 +93,17 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
                 })
             } else if ty == &parse_quote!(bool) {
                 quote!(Value::Bool(b), "a boolean", b)
+            } else if query_type.is_some() && ty == &parse_quote!(Map<InfoHash, #query_type>) {
+                // TODO: generalize compound types like this one
+                // probably gonna have to make this setup more conducive to recursion
+                // that sounds like a massive challenge
+                quote!(
+                    Value::Object(m),
+                    "a map of infohashes to torrent status",
+                    m.into_iter().map(|(hash, status)| (hash, serde_json::from_value(status).unwrap())).collect()
+                )
             } else {
-                todo!()
+                todo!("{:?}", ty)
             };
 
             quote!(#expect!(__response, #expectation))
@@ -165,9 +178,30 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
                     sig.generics.lt_token = parse_quote!(<);
                     sig.generics.gt_token = parse_quote!(>);
                 }
-                sig.generics.params .push(parse_quote!(__I: FromIterator<#elem>));
+                sig.generics.params.push(parse_quote!(__I: FromIterator<#elem>));
                 parse_quote!(-> Result<__I>)
-            }
+            },
+            Type::Path(ref t) => {
+                let seg: &PathSegment = t.path.segments.last().as_ref().unwrap();
+                if &seg.ident == (&parse_quote!(Map) as &Ident) {
+                    let (keys, vals) = {
+                        let args = match seg.arguments {
+                            PathArguments::AngleBracketed(ref x) => &x.args,
+                            _ => panic!(),
+                        };
+                        let mut iter = args.iter().cloned();
+                        (iter.next().unwrap(), iter.next().unwrap())
+                    };
+                    if sig.generics.lt_token.is_none() {
+                        sig.generics.lt_token = parse_quote!(<);
+                        sig.generics.gt_token = parse_quote!(>);
+                    }
+                    sig.generics.params.push(parse_quote!(__I: FromIterator<(#keys, #vals)>));
+                    parse_quote!(-> Result<__I>)
+                } else {
+                    parse_quote!(-> Result<#t>)
+                }
+            },
             _ => parse_quote!(-> Result<#t>)
         },
     };
