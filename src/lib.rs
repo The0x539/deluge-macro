@@ -77,6 +77,7 @@ fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
 pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let RpcMethod { attrs, vis, mut sig, body } = parse_macro_input!(item as RpcMethod);
 
+    let mut kwkeys = Vec::new();
     let mut kwargs = Vec::new();
 
     let mut class = String::from("core");
@@ -101,7 +102,8 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // This doesn't seem like the best idea, but whatever.
                     kwkey => {
                         let kwarg = mnv.lit;
-                        kwargs.push(quote!(#kwkey => #kwarg));
+                        kwkeys.push(quote!(#kwkey));
+                        kwargs.push(quote!(#kwarg));
                     }
                 }
             },
@@ -122,7 +124,8 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         for bound in &type_param.bounds {
             if bound == &parse_quote!(Query) {
                 let ident = &type_param.ident;
-                kwargs.push(quote!("keys" => #ident::keys()));
+                kwkeys.push(quote!("keys"));
+                kwargs.push(quote!(#ident::keys()));
             }
         }
     }
@@ -149,7 +152,10 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let body: Block = parse_quote!({
         assert!(self.auth_level >= AuthLevel::#auth_level);
-        let __response = make_request!(self, #method_name, [#(#args),*], {#(#kwargs),*});
+        let __args = ::std::vec![#(::serde_yaml::to_value(#args).unwrap()),*];
+        let mut __kwargs = ::std::collections::HashMap::new();
+        #(__kwargs.insert(::std::string::String::from(#kwkeys), ::serde_yaml::Value::from(#kwargs));)*
+        let __response = self.request(#method_name, __args, __kwargs).await?;
         let val = #val_expr?;
         #ret_block
     });
@@ -159,8 +165,6 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     vis.to_tokens(&mut stream);
     sig.to_tokens(&mut stream);
     body.to_tokens(&mut stream);
-
-    //println!("{}", stream.to_string());
 
     stream.into()
 }
