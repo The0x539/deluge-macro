@@ -135,15 +135,15 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut kwargs = Vec::new();
 
-    let mut class = None;
+    let mut class = String::from("core");
     let mut name: TokenTree2 = sig.ident.clone().into();
-    let mut auth_level: i64 = 0;
+    let mut auth_level: i64 = 5;
     for arg in parse_macro_input!(attr as AttributeArgs) {
         match arg {
             NestedMeta::Meta(Meta::NameValue(mnv)) => {
                 match mnv.path.get_ident().expect("unexpected path").to_string().as_str() {
                     "class" => class = match mnv.lit {
-                        Lit::Str(s) => Some(s.value()),
+                        Lit::Str(s) => s.value(),
                         x => panic!("unexpected class value: {:?}", x),
                     },
                     "method" => name = match mnv.lit {
@@ -216,7 +216,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         },
     };
 
-    let method_name = format!("{}.{}", class.expect("must specify an RPC class"), name);
+    let method_name = format!("{}.{}", class, name);
 
     let ret_block = body.unwrap_or(parse_quote!( { return Ok(val); } ));
 
