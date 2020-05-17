@@ -218,12 +218,12 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let method_name = format!("{}.{}", class.expect("must specify an RPC class"), name);
 
-    let ret_block = body.unwrap_or(parse_quote!( { return val; } ));
+    let ret_block = body.unwrap_or(parse_quote!( { return Ok(val); } ));
 
     let body: Block = parse_quote!({
         assert!(self.auth_level >= #auth_level);
         let __response = make_request!(self, #method_name, [#(#args),*], {#(#kwargs),*});
-        let val = #val_expr;
+        let val = #val_expr?;
         #ret_block
     });
 
