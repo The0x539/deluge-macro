@@ -4,7 +4,6 @@ use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
 use syn::{
     parse_macro_input,
     FnArg,
-    Generics,
     parse_quote,
     parse::{Parse, ParseStream},
     AttributeArgs,
@@ -16,14 +15,11 @@ use syn::{
     ItemStruct,
     Signature,
     NestedMeta,
-    PathArguments,
     ReturnType,
     Block,
-    GenericParam,
     Pat,
     Expr,
     Ident,
-    TypeSlice,
     Type,
 };
 use quote::{quote, ToTokens};
@@ -44,12 +40,11 @@ impl Parse for RpcMethod {
     }
 }
 
-enum ResponseType {
+#[derive(Debug)]
+enum ResponseType<'a> {
     Nothing,
-    Value(Type),
-    Tuple(Type),
-    Sequence(Type),
-    Mapping(Type, Type),
+    Single(&'a Box<Type>),
+    Compound(&'a Box<Type>),
 }
 
 fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
@@ -61,7 +56,7 @@ fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
                 Err(Error::expected("nothing", __response))
             }
         },
-        ResponseType::Value(ty) => quote! {
+        ResponseType::Single(ty) => quote! {
             match __response.len() {
                 1 => {
                     let v = __response.into_iter().next().unwrap();
@@ -70,41 +65,11 @@ fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
                 _ => Err(Error::expected("a list of length 1", __response))
             }
         },
-        ResponseType::Tuple(ty) => quote! {
-            {
-                Ok(serde_yaml::from_value::<#ty>(serde_yaml::Value::Sequence(__response)).unwrap() as #ty) as Result<#ty>
-            }
-        },
-        ResponseType::Sequence(ty) => quote! {
-            __response
-                .into_iter()
-                .map(|v| Ok(serde_yaml::from_value::<#ty>(v).unwrap()))
-                .collect::<Result<_>>()
-        },
-        ResponseType::Mapping(kty, vty) => quote! {
-
-            match __response.len() {
-                1 => {
-                    let m = __response.into_iter().next().unwrap();
-                    m
-                        .as_mapping()
-                        .unwrap()
-                        .into_iter()
-                        .map(|(k, v)| Ok((serde_yaml::from_value::<#kty>(k.clone()).unwrap(), serde_yaml::from_value::<#vty>(v.clone()).unwrap())))
-                        .collect::<Result<_>>()
-                }
-                _ => Err(Error::expected("a list of length 1", __response))
-            }
-        },
+        ResponseType::Compound(ty) => quote! {
+            // TODO: propagate serde errors instead of unwrapping
+            Result::<#ty>::Ok(serde_yaml::from_value::<#ty>(serde_yaml::Value::Sequence(__response)).unwrap())
+        }
     }
-}
-
-fn push_generic_param(generics: &mut Generics, param: GenericParam) {
-    if generics.lt_token.is_none() {
-        generics.lt_token = parse_quote!(<);
-        generics.gt_token = parse_quote!(>);
-    }
-    generics.params.push(param);
 }
 
 #[proc_macro_attribute]
@@ -161,36 +126,21 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // TODO: be recursive here. it'd be nice to have a (Map<String, AuthLevel>, Map<AuthLevel, String>)
-    let (response_type, result_type) = match sig.output {
-        ReturnType::Default => (ResponseType::Nothing, quote!(())),
-        ReturnType::Type(_, ref t) => match t.as_ref() {
-            Type::Slice(TypeSlice { elem, .. }) => {
-                push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<#elem>));
-                (ResponseType::Sequence(parse_quote!(#elem)), quote!(__I))
-            },
-            Type::Tuple(ref t) if !t.elems.is_empty() => {
-                (ResponseType::Tuple(parse_quote!(#t)), quote!(#t))
-            },
-            Type::Path(ref t) if &t.path.segments.last().as_ref().unwrap().ident == (&parse_quote!(Map) as &Ident) => {
-                let (keys, vals) = {
-                    let args = match t.path.segments.last().as_ref().unwrap().arguments {
-                        PathArguments::AngleBracketed(ref x) => &x.args,
-                        _ => panic!(),
-                    };
-                    let mut iter = args.iter().cloned();
-                    (iter.next().unwrap(), iter.next().unwrap())
-                };
-                push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<(#keys, #vals)>));
-                (ResponseType::Mapping(parse_quote!(#keys), parse_quote!(#vals)), quote!(__I))
-            },
-            _ => (ResponseType::Value(parse_quote!(#t)), quote!(#t))
+    let response_type = match &sig.output {
+        ReturnType::Default => ResponseType::Nothing,
+        ReturnType::Type(_, ty) => match ty.as_ref() {
+            Type::Tuple(t) if !t.elems.is_empty() => ResponseType::Compound(ty),
+            Type::Path(t) if t.path.segments.last().unwrap().ident.to_string() == "Vec" => ResponseType::Compound(ty),
+            _ => ResponseType::Single(ty)
         },
     };
 
     let val_expr = make_val_expr(response_type);
 
-    sig.output = parse_quote!(-> Result<#result_type>);
+    sig.output = match sig.output {
+        ReturnType::Default => parse_quote!(-> Result<()>),
+        ReturnType::Type(_, t) => parse_quote!(-> Result<#t>),
+    };
 
     let method_name = format!("{}.{}", class, name);
 
@@ -208,6 +158,8 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     vis.to_tokens(&mut stream);
     sig.to_tokens(&mut stream);
     body.to_tokens(&mut stream);
+
+    //println!("{}", stream.to_string());
 
     stream.into()
 }
