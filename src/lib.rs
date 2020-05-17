@@ -12,15 +12,11 @@ use syn::{
     TraitItemMethod,
     Meta,
     Visibility,
-    TypePath,
-    PathSegment,
     Lit,
     ItemStruct,
     Signature,
     NestedMeta,
     PathArguments,
-    AngleBracketedGenericArguments,
-    GenericArgument,
     ReturnType,
     Block,
     GenericParam,
@@ -48,81 +44,36 @@ impl Parse for RpcMethod {
     }
 }
 
-fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStream2 {
-    match ret_type {
-        ReturnType::Default => quote!(expect_nothing!(__response)),
-        ReturnType::Type(_, ref ty) => {
-            let mut ty: &Type = ty;
-            let expect = match ty {
-                Type::Slice(TypeSlice { elem, .. }) => {
-                    ty = elem;
-                    quote!(expect_seq)
-                },
-                Type::Path(TypePath { path, .. }) =>  {
-                    let t = path.segments.last().unwrap();
-                    if &t.ident == (&parse_quote!(Option) as &Ident) {
-                        ty = match t.arguments {
-                            PathArguments::AngleBracketed(ref args) => match args {
-                                AngleBracketedGenericArguments { args, .. } => match args.first().unwrap() {
-                                    GenericArgument::Type(x) => x,
-                                    _ => panic!(),
-                                }
-                            },
-                            _ => panic!()
-                        };
-                        quote!(expect_option)
-                    } else {
-                        quote!(expect_val)
-                    }
-                },
-                _ => quote!(expect_val)
-            };
+enum ResponseType {
+    Nothing,
+    Value(Type),
+    Sequence(Type),
+}
 
-            let expectation = if ty == &parse_quote!(()) {
-                quote!(Value::Null, "None", ())
-            } else if ty == &parse_quote!(Dict) {
-                quote!(Value::Object(m), "a dict", m.into_iter().collect())
-            } else if query_type.is_some() && ty == &parse_quote!(#query_type) {
-                quote!(m @ Value::Object(_), "torrent status", serde_json::from_value(m).unwrap())
-            } else if ty == &parse_quote!(String) {
-                quote!(Value::String(s), "a string", s)
-            } else if ty == &parse_quote!(InfoHash) {
-                quote!(Value::String(s), "an infohash", match InfoHash::from_hex(&s) {
-                    Some(hash) => hash,
-                    None => return Err(Error::expected("an infohash", s)),
-                })
-            } else if ty == &parse_quote!(i64) {
-                quote!(Value::Number(num), "a number", match num.as_i64() {
-                    Some(n) => n,
-                    None => return Err(Error::expected("an i64", Value::Number(num.clone()))),
-                })
-            } else if ty == &parse_quote!(AuthLevel) {
-                quote!(Value::Number(num), "an auth level", match num.as_u64() {
-                    Some(n) if n <= (u8::MAX as u64) && AuthLevel::try_from(n as u8).is_ok() => AuthLevel::try_from(n as u8).unwrap(),
-                    x => return Err(Error::expected("an auth level", Value::Number(num.clone()))),
-                })
-            } else if ty == &parse_quote!(bool) {
-                quote!(Value::Bool(b), "a boolean", b)
-            } else if query_type.is_some() && ty == &parse_quote!(Map<InfoHash, #query_type>) {
-                // TODO: generalize compound types like this one
-                // probably gonna have to make this setup more conducive to recursion
-                // that sounds like a massive challenge
-                quote!(
-                    Value::Object(m),
-                    "a map of infohashes to torrent status",
-                    m.into_iter()
-                        .map(|(s, status)| match InfoHash::from_hex(&s) {
-                            Some(hash) => Ok((hash, serde_json::from_value(status).unwrap())),
-                            None => Err(Error::expected("an infohash", s)),
-                        })
-                        .collect::<Result<__I>>()?
-                )
+fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
+    match response_type {
+        ResponseType::Nothing => quote! {
+            if __response.is_empty() {
+                Ok(())
             } else {
-                todo!("{:?}", ty)
-            };
-
-            quote!(#expect!(__response, #expectation))
-        }
+                Err(Error::expected("nothing", __response))
+            }
+        },
+        ResponseType::Value(ty) => quote! {
+            match __response.len() {
+                1 => {
+                    let v = __response.into_iter().next().unwrap();
+                    Ok(serde_json::from_value::<#ty>(v).unwrap())
+                }
+                _ => Err(Error::expected("a list of length 1", __response))
+            }
+        },
+        ResponseType::Sequence(ty) => quote! {
+            __response
+                .into_iter()
+                .map(|v| Ok(serde_json::from_value::<#ty>(v).unwrap()))
+                .collect::<Result<_>>()
+        },
     }
 }
 
@@ -179,47 +130,42 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|ident| parse_quote!(#ident))
         .collect();
 
-    let mut query_type = None;
-
     for type_param in sig.generics.type_params() {
         for bound in &type_param.bounds {
             if bound == &parse_quote!(Query) {
                 let ident = &type_param.ident;
-                query_type = Some(ident);
                 kwargs.push(quote!("keys" => #ident::keys()));
             }
         }
     }
 
-    let val_expr = make_val_expr(&sig.output, &query_type);
-
-    sig.output = match sig.output {
-        ReturnType::Default => parse_quote!(-> Result<()>),
+    let (response_type, result_type) = match sig.output {
+        ReturnType::Default => (ResponseType::Nothing, quote!(())),
         ReturnType::Type(_, ref t) => match t.as_ref() {
             Type::Slice(TypeSlice { elem, .. }) => {
                 push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<#elem>));
-                parse_quote!(-> Result<__I>)
+                (ResponseType::Sequence(parse_quote!(#elem)), quote!(__I))
             },
-            Type::Path(ref t) => {
-                let seg: &PathSegment = t.path.segments.last().as_ref().unwrap();
-                if &seg.ident == (&parse_quote!(Map) as &Ident) {
-                    let (keys, vals) = {
-                        let args = match seg.arguments {
-                            PathArguments::AngleBracketed(ref x) => &x.args,
-                            _ => panic!(),
-                        };
-                        let mut iter = args.iter().cloned();
-                        (iter.next().unwrap(), iter.next().unwrap())
+            Type::Path(ref t) if &t.path.segments.last().as_ref().unwrap().ident == (&parse_quote!(Map) as &Ident) => {
+                let (keys, vals) = {
+                    let args = match t.path.segments.last().as_ref().unwrap().arguments {
+                        PathArguments::AngleBracketed(ref x) => &x.args,
+                        _ => panic!(),
                     };
-                    push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<(#keys, #vals)>));
-                    parse_quote!(-> Result<__I>)
-                } else {
-                    parse_quote!(-> Result<#t>)
-                }
+                    let mut iter = args.iter().cloned();
+                    (iter.next().unwrap(), iter.next().unwrap())
+                };
+                let pairs = quote!((#keys, #vals));
+                push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<#pairs>));
+                (ResponseType::Sequence(parse_quote!(#pairs)), quote!(__I))
             },
-            _ => parse_quote!(-> Result<#t>)
+            _ => (ResponseType::Value(parse_quote!(#t)), quote!(#t))
         },
     };
+
+    let val_expr = make_val_expr(response_type);
+
+    sig.output = parse_quote!(-> Result<#result_type>);
 
     let method_name = format!("{}.{}", class, name);
 
