@@ -4,6 +4,7 @@ use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
 use syn::{
     parse_macro_input,
     FnArg,
+    Generics,
     parse_quote,
     parse::{Parse, ParseStream},
     AttributeArgs,
@@ -22,6 +23,7 @@ use syn::{
     GenericArgument,
     ReturnType,
     Block,
+    GenericParam,
     Pat,
     Expr,
     Ident,
@@ -111,6 +113,14 @@ fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStr
     }
 }
 
+fn push_generic_param(generics: &mut Generics, param: GenericParam) {
+    if generics.lt_token.is_none() {
+        generics.lt_token = parse_quote!(<);
+        generics.gt_token = parse_quote!(>);
+    }
+    generics.params.push(param);
+}
+
 #[proc_macro_attribute]
 pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let RpcMethod { attrs, vis, mut sig, body } = parse_macro_input!(item as RpcMethod);
@@ -174,11 +184,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         ReturnType::Default => parse_quote!(-> Result<()>),
         ReturnType::Type(_, ref t) => match t.as_ref() {
             Type::Slice(TypeSlice { elem, .. }) => {
-                if sig.generics.lt_token.is_none() {
-                    sig.generics.lt_token = parse_quote!(<);
-                    sig.generics.gt_token = parse_quote!(>);
-                }
-                sig.generics.params.push(parse_quote!(__I: FromIterator<#elem>));
+                push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<#elem>));
                 parse_quote!(-> Result<__I>)
             },
             Type::Path(ref t) => {
@@ -192,11 +198,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
                         let mut iter = args.iter().cloned();
                         (iter.next().unwrap(), iter.next().unwrap())
                     };
-                    if sig.generics.lt_token.is_none() {
-                        sig.generics.lt_token = parse_quote!(<);
-                        sig.generics.gt_token = parse_quote!(>);
-                    }
-                    sig.generics.params.push(parse_quote!(__I: FromIterator<(#keys, #vals)>));
+                    push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<(#keys, #vals)>));
                     parse_quote!(-> Result<__I>)
                 } else {
                     parse_quote!(-> Result<#t>)
