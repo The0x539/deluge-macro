@@ -63,7 +63,7 @@ fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
             match __response.len() {
                 1 => {
                     let v = __response.into_iter().next().unwrap();
-                    Ok(serde_json::from_value::<#ty>(v).unwrap())
+                    Ok(serde_yaml::from_value::<#ty>(v).unwrap())
                 }
                 _ => Err(Error::expected("a list of length 1", __response))
             }
@@ -71,7 +71,7 @@ fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
         ResponseType::Sequence(ty) => quote! {
             __response
                 .into_iter()
-                .map(|v| Ok(serde_json::from_value::<#ty>(v).unwrap()))
+                .map(|v| Ok(serde_yaml::from_value::<#ty>(v).unwrap()))
                 .collect::<Result<_>>()
         },
     }
