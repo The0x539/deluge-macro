@@ -49,6 +49,7 @@ enum ResponseType {
     Value(Type),
     Tuple(Type),
     Sequence(Type),
+    Mapping(Type, Type),
 }
 
 fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
@@ -79,6 +80,21 @@ fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
                 .into_iter()
                 .map(|v| Ok(serde_yaml::from_value::<#ty>(v).unwrap()))
                 .collect::<Result<_>>()
+        },
+        ResponseType::Mapping(kty, vty) => quote! {
+
+            match __response.len() {
+                1 => {
+                    let m = __response.into_iter().next().unwrap();
+                    m
+                        .as_mapping()
+                        .unwrap()
+                        .into_iter()
+                        .map(|(k, v)| Ok((serde_yaml::from_value::<#kty>(k.clone()).unwrap(), serde_yaml::from_value::<#vty>(v.clone()).unwrap())))
+                        .collect::<Result<_>>()
+                }
+                _ => Err(Error::expected("a list of length 1", __response))
+            }
         },
     }
 }
@@ -165,9 +181,8 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let mut iter = args.iter().cloned();
                     (iter.next().unwrap(), iter.next().unwrap())
                 };
-                let pairs = quote!((#keys, #vals));
-                push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<#pairs>));
-                (ResponseType::Sequence(parse_quote!(#pairs)), quote!(__I))
+                push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<(#keys, #vals)>));
+                (ResponseType::Mapping(parse_quote!(#keys), parse_quote!(#vals)), quote!(__I))
             },
             _ => (ResponseType::Value(parse_quote!(#t)), quote!(#t))
         },
