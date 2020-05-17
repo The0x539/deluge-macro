@@ -48,7 +48,7 @@ impl Parse for RpcMethod {
 
 fn make_val_expr(ret_type: &ReturnType, query_type: &Option<&Ident>) -> TokenStream2 {
     match ret_type {
-        ReturnType::Default => quote!(expect_nothing!(val)),
+        ReturnType::Default => quote!(expect_nothing!(__response)),
         ReturnType::Type(_, ref ty) => {
             let mut ty: &Type = ty;
             let expect = match ty {
