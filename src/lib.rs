@@ -47,6 +47,7 @@ impl Parse for RpcMethod {
 enum ResponseType {
     Nothing,
     Value(Type),
+    Tuple(Type),
     Sequence(Type),
 }
 
@@ -66,6 +67,11 @@ fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
                     Ok(serde_yaml::from_value::<#ty>(v).unwrap())
                 }
                 _ => Err(Error::expected("a list of length 1", __response))
+            }
+        },
+        ResponseType::Tuple(ty) => quote! {
+            {
+                Ok(serde_yaml::from_value::<#ty>(serde_yaml::Value::Sequence(__response)).unwrap() as #ty) as Result<#ty>
             }
         },
         ResponseType::Sequence(ty) => quote! {
@@ -139,12 +145,16 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
+    // TODO: be recursive here. it'd be nice to have a (Map<String, AuthLevel>, Map<AuthLevel, String>)
     let (response_type, result_type) = match sig.output {
         ReturnType::Default => (ResponseType::Nothing, quote!(())),
         ReturnType::Type(_, ref t) => match t.as_ref() {
             Type::Slice(TypeSlice { elem, .. }) => {
                 push_generic_param(&mut sig.generics, parse_quote!(__I: FromIterator<#elem>));
                 (ResponseType::Sequence(parse_quote!(#elem)), quote!(__I))
+            },
+            Type::Tuple(ref t) if !t.elems.is_empty() => {
+                (ResponseType::Tuple(parse_quote!(#t)), quote!(#t))
             },
             Type::Path(ref t) if &t.path.segments.last().as_ref().unwrap().ident == (&parse_quote!(Map) as &Ident) => {
                 let (keys, vals) = {
