@@ -258,7 +258,7 @@ pub fn value_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
     let the_impl = quote! {
         impl ::core::convert::TryFrom<#ty> for #name {
             type Error = ::std::string::String;
-            fn try_from(value: #ty) -> ::core::result::Result<Self, Self::Error> {
+            fn try_from(value: #ty) -> ::core::result::Result<Self, ::std::string::String> {
                 match value {
                     #(#discriminants => Ok(Self::#variants),)*
                     _ => Err(format!(#error_fmt, value)),
@@ -300,7 +300,7 @@ fn string_enum(item: TokenStream) -> TokenStream {
     let the_impl = quote! {
         impl ::core::convert::TryFrom<&::core::primitive::str> for #name {
             type Error = ::std::string::String;
-            fn try_from(value: &::core::primitive::str) -> ::core::result::Result<Self, Self::Error> {
+            fn try_from(value: &::core::primitive::str) -> ::core::result::Result<Self, ::std::string::String> {
                 match value {
                     #(#discriminants => Ok(Self::#variants),)*
                     _ => Err(format!(#error_fmt, value)),
