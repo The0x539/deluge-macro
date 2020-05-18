@@ -54,21 +54,21 @@ fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
             if __response.is_empty() {
                 Ok(())
             } else {
-                Err(Error::expected("nothing", __response))
+                Err(self::Error::expected("nothing", __response))
             }
         },
         ResponseType::Single(ty) => quote! {
             match __response.len() {
                 1 => {
                     let v = __response.into_iter().next().unwrap();
-                    Ok(serde_yaml::from_value::<#ty>(v).unwrap())
+                    Ok(::serde_yaml::from_value::<#ty>(v).unwrap())
                 }
-                _ => Err(Error::expected("a list of length 1", __response))
+                _ => Err(self::Error::expected("a list of length 1", __response))
             }
         },
         ResponseType::Compound(ty) => quote! {
             // TODO: propagate serde errors instead of unwrapping
-            Result::<#ty>::Ok(serde_yaml::from_value::<#ty>(serde_yaml::Value::Sequence(__response)).unwrap())
+            self::Result::<#ty>::Ok(::serde_yaml::from_value::<#ty>(::serde_yaml::Value::Sequence(__response)).unwrap())
         }
     }
 }
@@ -142,8 +142,8 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let val_expr = make_val_expr(response_type);
 
     sig.output = match sig.output {
-        ReturnType::Default => parse_quote!(-> Result<()>),
-        ReturnType::Type(_, t) => parse_quote!(-> Result<#t>),
+        ReturnType::Default => parse_quote!(-> self::Result<()>),
+        ReturnType::Type(_, t) => parse_quote!(-> self::Result<#t>),
     };
 
     let method_name = format!("{}.{}", class, name);
@@ -151,7 +151,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let ret_block = body.unwrap_or(parse_quote!( { return Ok(val); } ));
 
     let body: Block = parse_quote!({
-        assert!(self.auth_level >= AuthLevel::#auth_level);
+        assert!(self.auth_level >= self::AuthLevel::#auth_level);
         let __args = ::std::vec![#(::serde_yaml::to_value(#args).unwrap()),*];
         let mut __kwargs = ::std::collections::HashMap::new();
         #(__kwargs.insert(::std::string::String::from(#kwkeys), ::serde_yaml::Value::from(#kwargs));)*
@@ -180,8 +180,7 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
         .map(|field| field.ident.as_ref().expect("fields must be named"));
 
     let the_impl = quote! {
-        // TODO: hygiene
-        impl session::Query for #name {
+        impl self::Query for #name {
             fn keys() -> &'static [&'static str] {
                 &[#(stringify!(#fields)),*]
             }
