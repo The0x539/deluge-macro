@@ -1,8 +1,10 @@
 [package]
-name = "deluge-macro"
+name = "deluge-rpc-macro"
 version = "0.1.0"
 authors = ["The0x539 <the0x539@gmail.com>"]
 edition = "2018"
+license = "GPL-3.0-only"
+description = "Procedural macros used by the deluge-rpc crate."
 
 [lib]
 proc-macro = true
