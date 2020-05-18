@@ -286,7 +286,7 @@ fn string_enum(item: TokenStream) -> TokenStream {
     let name = &item.ident;
 
     item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]));
-    item.attrs.push(parse_quote!(#[serde(try_from = "&::core::primitive::str", into = "&'static ::core::primitive::str")]));
+    item.attrs.push(parse_quote!(#[serde(try_from = "::std::string::String", into = "&'static ::core::primitive::str")]));
     item.attrs.push(parse_quote!(#[repr(u8)]));
 
     let (variants, discriminants) = item.variants
@@ -305,6 +305,12 @@ fn string_enum(item: TokenStream) -> TokenStream {
                     #(#discriminants => Ok(Self::#variants),)*
                     _ => Err(format!(#error_fmt, value)),
                 }
+            }
+        }
+        impl ::core::convert::TryFrom<::std::string::String> for #name {
+            type Error = ::std::string::String;
+            fn try_from(value: ::std::string::String) -> ::core::result::Result<Self, ::std::string::String> {
+                ::core::convert::TryFrom::<&::core::primitive::str>::try_from(&value)
             }
         }
         impl ::core::convert::Into<&'static ::core::primitive::str> for #name {
