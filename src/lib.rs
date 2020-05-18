@@ -234,11 +234,10 @@ pub fn option_struct(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn value_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let ty: Type = match parse_macro_input!(attr as AttributeArgs).first().expect("must specify a type") {
-        NestedMeta::Meta(Meta::Path(p)) => parse_quote!(#p),
-        x => panic!("expected a type, got {:?}", x),
-    };
-
+    let ty: Type = syn::parse(attr).unwrap();
+    if ty == parse_quote!(&str) {
+        return string_enum(item);
+    }
     let ty_str: String = ty.to_token_stream().to_string();
 
     let mut item = parse_macro_input!(item as ItemEnum);
@@ -247,6 +246,7 @@ pub fn value_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]));
     item.attrs.push(parse_quote!(#[serde(try_from = #ty_str, into = #ty_str)]));
+    item.attrs.push(parse_quote!(#[repr(#ty)]));
 
     let (variants, discriminants) = item.variants
         .iter()
@@ -266,6 +266,54 @@ pub fn value_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
         impl ::core::convert::Into<#ty> for #name { fn into(self) -> #ty { self as #ty } }
+        impl ::core::fmt::Display for #name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+                ::core::fmt::Debug::fmt(self, f)
+            }
+        }
+    };
+
+    let mut stream = TokenStream2::new();
+    item.to_tokens(&mut stream);
+    the_impl.to_tokens(&mut stream);
+
+    stream.into()
+}
+
+fn string_enum(item: TokenStream) -> TokenStream {
+    let mut item = parse_macro_input!(item as ItemEnum);
+
+    let name = &item.ident;
+
+    item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]));
+    item.attrs.push(parse_quote!(#[serde(try_from = "&::core::primitive::str", into = "&'static ::core::primitive::str")]));
+    item.attrs.push(parse_quote!(#[repr(u8)]));
+
+    let (variants, discriminants) = item.variants
+        .iter_mut()
+        .map(|v| (&v.ident, v.discriminant.take().map(|(_, expr)| expr)))
+        .map(|(ident, discrim)| (ident, discrim.unwrap_or(parse_quote!(stringify!(#ident)))))
+        .unzip::<_, _, Vec<&Ident>, Vec<Expr>>();
+
+    let error_fmt = format!("Invalid {} value: {{:?}}", name);
+
+    let the_impl = quote! {
+        impl ::core::convert::TryFrom<&::core::primitive::str> for #name {
+            type Error = ::std::string::String;
+            fn try_from(value: &::core::primitive::str) -> ::core::result::Result<Self, Self::Error> {
+                match value {
+                    #(#discriminants => Ok(Self::#variants),)*
+                    _ => Err(format!(#error_fmt, value)),
+                }
+            }
+        }
+        impl ::core::convert::Into<&'static ::core::primitive::str> for #name {
+            fn into(self) -> &'static ::core::primitive::str {
+                match self {
+                    #(Self::#variants => #discriminants,)*
+                }
+            }
+        }
         impl ::core::fmt::Display for #name {
             fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
                 ::core::fmt::Debug::fmt(self, f)
