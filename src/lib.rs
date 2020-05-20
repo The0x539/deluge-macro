@@ -190,7 +190,7 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
 
     let the_impl = quote! {
         #[allow(non_camel_case_types)]
-        #[derive(Debug, Default, PartialEq, Eq, ::serde::Deserialize)]
+        #[derive(Debug, Default, PartialEq, ::serde::Deserialize)]
         #[serde(default)]
         struct #diff_name {
             #(#idents: ::core::option::Option<#types>,)*
