@@ -276,7 +276,7 @@ pub fn value_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let name = &item.ident;
 
-    item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]));
+    item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, ::serde::Serialize, ::serde::Deserialize)]));
     item.attrs.push(parse_quote!(#[serde(try_from = #ty_str, into = #ty_str)]));
     item.attrs.push(parse_quote!(#[repr(#ty)]));
 
@@ -317,7 +317,7 @@ fn string_enum(item: TokenStream) -> TokenStream {
 
     let name = &item.ident;
 
-    item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]));
+    item.attrs.push(parse_quote!(#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, ::serde::Serialize, ::serde::Deserialize)]));
     item.attrs.push(parse_quote!(#[serde(try_from = "::std::string::String", into = "&'static ::core::primitive::str")]));
     item.attrs.push(parse_quote!(#[repr(u8)]));
 
