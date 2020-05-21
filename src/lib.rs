@@ -52,8 +52,7 @@ enum ResponseType<'a> {
 pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let RpcMethod { attrs, vis, mut sig, body } = parse_macro_input!(item as RpcMethod);
 
-    let mut kwkeys = Vec::new();
-    let mut kwargs = Vec::new();
+    let mut kwargs = std::collections::HashMap::<Expr, _>::new();
 
     let mut class = String::from("core");
     let mut name: TokenTree2 = sig.ident.clone().into();
@@ -77,8 +76,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // This doesn't seem like the best idea, but whatever.
                     kwkey => {
                         let kwarg = mnv.lit;
-                        kwkeys.push(quote!(#kwkey));
-                        kwargs.push(quote!(#kwarg));
+                        kwargs.insert(parse_quote!(#kwkey), quote!(#kwarg));
                     }
                 }
             },
@@ -99,8 +97,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         for bound in &type_param.bounds {
             if bound == &parse_quote!(Query) {
                 let ident = &type_param.ident;
-                kwkeys.push(quote!("keys"));
-                kwargs.push(quote!(#ident::keys()));
+                kwargs.insert(parse_quote!("keys"), quote!(#ident::keys()));
             }
         }
     }
@@ -134,12 +131,22 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let ret_block = body.unwrap_or(parse_quote!( { return Ok(val); } ));
 
+    let args_expr = quote!((#(#args,)*));
+    let kwargs_expr = match kwargs.len() {
+        0 => quote!(::std::collections::HashMap::<(), ()>::new()),
+        _ => {
+            let (kwkeys, kwargs) = kwargs.into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
+            quote!({
+                let mut map = ::std::collections::HashMap::new();
+                #(map.insert(#kwkeys, #kwargs);)*
+                map
+            })
+        },
+    };
+
     let body: Block = parse_quote!({
         assert!(self.auth_level >= self::AuthLevel::#auth_level);
-        let __args = ::std::vec![#(::serde_yaml::to_value(#args).unwrap()),*];
-        let mut __kwargs = ::std::collections::HashMap::new();
-        #(__kwargs.insert(::std::string::String::from(#kwkeys), ::serde_yaml::Value::from(#kwargs));)*
-        let #request_pat = self.request::<#request_type>(#method_name, __args, __kwargs).await?;
+        let #request_pat = self.request::<#request_type, _, _>(#method_name, #args_expr, #kwargs_expr).await?;
         #nothing_val_stmt
         #ret_block
     });
