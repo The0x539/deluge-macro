@@ -48,31 +48,6 @@ enum ResponseType<'a> {
     Compound(&'a Box<Type>),
 }
 
-fn make_val_expr(response_type: ResponseType) -> TokenStream2 {
-    match response_type {
-        ResponseType::Nothing => quote! {
-            if __response.is_empty() {
-                Ok(())
-            } else {
-                Err(self::Error::expected("nothing", __response))
-            }
-        },
-        ResponseType::Single(ty) => quote! {
-            match __response.len() {
-                1 => {
-                    let v = __response.into_iter().next().unwrap();
-                    Ok(::serde_yaml::from_value::<#ty>(v).unwrap())
-                }
-                _ => Err(self::Error::expected("a list of length 1", __response))
-            }
-        },
-        ResponseType::Compound(ty) => quote! {
-            // TODO: propagate serde errors instead of unwrapping
-            self::Result::<#ty>::Ok(::serde_yaml::from_value::<#ty>(::serde_yaml::Value::Sequence(__response)).unwrap())
-        }
-    }
-}
-
 #[proc_macro_attribute]
 pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     let RpcMethod { attrs, vis, mut sig, body } = parse_macro_input!(item as RpcMethod);
@@ -139,7 +114,16 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         },
     };
 
-    let val_expr = make_val_expr(response_type);
+    let (request_pat, request_type) = match response_type {
+        ResponseType::Nothing => (quote!([]), quote!([(); 0])),
+        ResponseType::Single(ty) => (quote!([val]), quote!([#ty; 1])),
+        ResponseType::Compound(ty) => (quote!(val), quote!(#ty)),
+    };
+
+    let nothing_val_stmt = match response_type {
+        ResponseType::Nothing => quote!(let val = ();),
+        _ => quote!(),
+    };
 
     sig.output = match sig.output {
         ReturnType::Default => parse_quote!(-> self::Result<()>),
@@ -155,8 +139,8 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         let __args = ::std::vec![#(::serde_yaml::to_value(#args).unwrap()),*];
         let mut __kwargs = ::std::collections::HashMap::new();
         #(__kwargs.insert(::std::string::String::from(#kwkeys), ::serde_yaml::Value::from(#kwargs));)*
-        let __response = self.request(#method_name, __args, __kwargs).await?;
-        let val = #val_expr?;
+        let #request_pat = self.request::<#request_type>(#method_name, __args, __kwargs).await?;
+        #nothing_val_stmt
         #ret_block
     });
 
@@ -187,13 +171,23 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
     let idents3 = idents.clone(); // ...
 
     let diff_name = format_ident!("__Diff_{}", name);
+    let de_func_name = format_ident!("__de_{}_diff_field", name);
+    let de_func_str = de_func_name.to_string();
 
     let the_impl = quote! {
+        #[allow(non_snake_case)]
+        fn #de_func_name<'de, D, T>(de: D) -> ::core::result::Result<::core::option::Option<T>, D::Error>
+          where D: ::serde::Deserializer<'de>, T: ::serde::Deserialize<'de> {
+            T::deserialize(de).map(::core::option::Option::Some)
+        }
         #[allow(non_camel_case_types)]
         #[derive(Debug, Default, PartialEq, ::serde::Deserialize)]
         #[serde(default)]
         struct #diff_name {
-            #(#idents: ::core::option::Option<#types>,)*
+            #(
+                #[serde(deserialize_with = #de_func_str)]
+                #idents: ::core::option::Option<#types>,
+            )*
         }
         impl self::Query for #name {
             type Diff = #diff_name;
