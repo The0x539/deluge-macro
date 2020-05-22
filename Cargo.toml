@@ -11,6 +11,6 @@ repository = "https://github.com/The0x539/deluge-macro"
 proc-macro = true
 
 [dependencies]
-syn = { version = "1.0.21", features = ["full", "extra-traits", "printing"] }
+syn = { version = "1.0.23", features = ["full", "extra-traits"] }
 quote = "1.0.5"
 proc-macro2 = "1.0.13"
