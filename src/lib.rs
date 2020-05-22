@@ -178,23 +178,13 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
     let idents3 = idents.clone(); // ...
 
     let diff_name = format_ident!("__Diff_{}", name);
-    let de_func_name = format_ident!("__de_{}_diff_field", name);
-    let de_func_str = de_func_name.to_string();
 
     let the_impl = quote! {
-        #[allow(non_snake_case)]
-        fn #de_func_name<'de, D, T>(de: D) -> ::core::result::Result<::core::option::Option<T>, D::Error>
-          where D: ::serde::Deserializer<'de>, T: ::serde::Deserialize<'de> {
-            T::deserialize(de).map(::core::option::Option::Some)
-        }
         #[allow(non_camel_case_types)]
         #[derive(Debug, Default, PartialEq, ::serde::Deserialize)]
         #[serde(default)]
         struct #diff_name {
-            #(
-                #[serde(deserialize_with = #de_func_str)]
-                #idents: ::core::option::Option<#types>,
-            )*
+            #(#idents: ::core::option::Option<#types>,)*
         }
         impl self::Query for #name {
             type Diff = #diff_name;
