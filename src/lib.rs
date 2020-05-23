@@ -356,3 +356,19 @@ fn string_enum(item: TokenStream) -> TokenStream {
 
     stream.into()
 }
+
+#[proc_macro_attribute]
+pub fn rename_event_enum(_: TokenStream, item: TokenStream) -> TokenStream {
+    let mut item = parse_macro_input!(item as ItemEnum);
+
+    item.variants
+        .iter_mut()
+        .for_each(|v| {
+            if v.attrs.is_empty() {
+                let renamed = format_ident!("{}Event", v.ident).to_string();
+                v.attrs.push(parse_quote!(#[serde(rename = #renamed)]));
+            }
+        });
+
+    item.to_token_stream().into()
+}
