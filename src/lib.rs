@@ -22,6 +22,7 @@ use syn::{
     Expr,
     Ident,
     Type,
+    Fields,
 };
 use quote::{quote, format_ident, ToTokens};
 
@@ -367,6 +368,18 @@ pub fn rename_event_enum(_: TokenStream, item: TokenStream) -> TokenStream {
             if v.attrs.is_empty() {
                 let renamed = format_ident!("{}Event", v.ident).to_string();
                 v.attrs.push(parse_quote!(#[serde(rename = #renamed)]));
+            }
+            match &mut v.fields {
+                // unhygenic, but whatever
+                Fields::Unit => v.attrs.push(parse_quote!(#[serde(deserialize_with = "untuple0")])),
+                Fields::Unnamed(fields) if fields.unnamed.len() == 1 =>
+                    fields
+                        .unnamed
+                        .first_mut()
+                        .unwrap()
+                        .attrs
+                        .push(parse_quote!(#[serde(deserialize_with = "untuple")])),
+                _ => (),
             }
         });
 
