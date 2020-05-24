@@ -132,7 +132,10 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let ret_block = body.unwrap_or(parse_quote!( { return Ok(val); } ));
 
-    let args_expr = quote!((#(#args,)*));
+    let args_expr = match args.len() {
+        0 => quote!([] as [(); 0]),
+        _ => quote!((#(#args,)*)),
+    };
     let kwargs_expr = match kwargs.len() {
         0 => quote!(::std::collections::HashMap::<(), ()>::new()),
         _ => {
