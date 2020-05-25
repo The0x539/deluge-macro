@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
+use proc_macro2::{TokenStream as TokenStream2};
 
 use syn::{
     parse_macro_input,
@@ -23,23 +23,157 @@ use syn::{
     Ident,
     Type,
     Fields,
+    ImplItemMethod,
+    Token,
+    punctuated::Punctuated,
 };
 use quote::{quote, format_ident, ToTokens};
 
-struct RpcMethod {
+use std::collections::HashMap;
+
+mod kw {
+    syn::custom_keyword!(rpc);
+}
+
+#[derive(Clone)]
+struct RpcClassMethod {
     attrs: Vec<Attribute>,
     vis: Visibility,
+    rpcness: Option<kw::rpc>,
     sig: Signature,
     body: Option<Block>,
 }
 
-impl Parse for RpcMethod {
+impl Parse for RpcClassMethod {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let attrs = input.call(Attribute::parse_outer)?;
         let vis = input.parse()?;
+        let rpcness = input.parse()?;
         let method: TraitItemMethod = input.parse()?;
-        Ok(Self { attrs, vis, sig: method.sig, body: method.default })
+        Ok(Self { attrs, vis, rpcness, sig: method.sig, body: method.default })
     }
+}
+
+impl ToTokens for RpcClassMethod {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        self.attrs.iter().for_each(|attr| attr.to_tokens(tokens));
+        self.vis.to_tokens(tokens);
+        self.sig.to_tokens(tokens);
+        match &self.body {
+            Some(body) => body.to_tokens(tokens),
+            None => quote!(;).to_tokens(tokens),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RpcClass {
+    attrs: Vec<Attribute>,
+    impl_token: Token![impl],
+    struct_name: Ident,
+    separator: Token![::],
+    class_name: Ident,
+    semicolon_token: Token![;],
+    methods: Vec<RpcClassMethod>,
+}
+
+impl Parse for RpcClass {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            attrs: input.call(Attribute::parse_outer)?,
+            impl_token: input.parse()?,
+            struct_name: input.parse()?,
+            separator: input.parse()?,
+            class_name: input.parse()?,
+            semicolon_token: input.parse()?,
+            methods: {
+                let mut methods = Vec::new();
+                while !input.is_empty() { methods.push(input.parse()?); }
+                methods
+            }
+        })
+    }
+}
+
+struct AttributeTokens {
+    #[allow(dead_code)] paren_token: syn::token::Paren,
+    args: Punctuated<NestedMeta, Token![,]>,
+}
+
+impl Parse for AttributeTokens {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let content;
+        Ok(Self {
+            paren_token: syn::parenthesized!(content in input),
+            args: content.parse_terminated(NestedMeta::parse)?,
+        })
+    }
+}
+
+#[proc_macro]
+pub fn rpc_class(item: TokenStream) -> TokenStream {
+    let RpcClass { attrs, struct_name, class_name, methods, .. } = parse_macro_input!(item);
+
+    let mut converted_methods = Vec::with_capacity(methods.len());
+    for method in methods.into_iter() {
+        let converted_method = if method.rpcness.is_some() {
+            let mut rpc_attr_args = Vec::new();
+            let mut other_attrs = Vec::new();
+            let RpcClassMethod { attrs, vis, sig, body, .. } = method;
+            for attr in attrs.into_iter() {
+                if attr.path == parse_quote!(rpc) {
+                    let tokens = attr.tokens.into();
+                    rpc_attr_args.extend(parse_macro_input!(tokens as AttributeTokens).args.into_iter());
+                } else {
+                    other_attrs.push(attr);
+                }
+            }
+            let (method_name, auth, kwargs) = process_attr_args(rpc_attr_args, class_name.to_string());
+            let name = format!("{}.{}", class_name, method_name);
+            convert_method(name, auth, kwargs, other_attrs, vis, sig, body)
+        } else {
+            ImplItemMethod {
+                attrs: method.attrs,
+                vis: method.vis,
+                defaultness: None,
+                sig: method.sig,
+                block: method.body.expect("non-RPC methods must have a body"),
+            }
+        };
+        converted_methods.push(converted_method);
+    }
+    quote!( #(#attrs)* impl #struct_name { #(#converted_methods)* }).into()
+}
+
+fn process_attr_args(
+    args: AttributeArgs,
+    mut method_name: String,
+) -> (String, TokenStream2, HashMap<Expr, TokenStream2>) {
+    let mut auth_level = quote!(default());
+    let mut kwargs = HashMap::new();
+    for arg in args.into_iter() {
+        if let NestedMeta::Meta(Meta::NameValue(mnv)) = arg {
+            match mnv.path.get_ident().expect("unexpected path").to_string().as_str() {
+                "method" => method_name = match &mnv.lit {
+                    Lit::Str(s) => s.value(),
+                    x => panic!("unexpected method name value: {:?}", x),
+                },
+                "auth_level" => auth_level = match &mnv.lit {
+                    Lit::Str(s) => { let s: Ident = s.parse().unwrap(); quote!(#s) }
+                    x => panic!("unexpected auth_level value: {:?}", x),
+                },
+                // This doesn't seem like the best idea, but whatever.
+                kwkey => {
+                    let kwarg = &mnv.lit;
+                    kwargs.insert(parse_quote!(#kwkey), quote!(#kwarg));
+                }
+            };
+        } else {
+            panic!("unexpected attribute arg on RPC method");
+        }
+    }
+
+    (method_name, auth_level, kwargs)
 }
 
 #[derive(Debug)]
@@ -49,42 +183,15 @@ enum ResponseType<'a> {
     Compound(&'a Box<Type>),
 }
 
-#[proc_macro_attribute]
-pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let RpcMethod { attrs, vis, mut sig, body } = parse_macro_input!(item as RpcMethod);
-
-    let mut kwargs = std::collections::HashMap::<Expr, _>::new();
-
-    let mut class = String::from("core");
-    let mut name: TokenTree2 = sig.ident.clone().into();
-    let mut auth_level = quote!(default());
-    for arg in parse_macro_input!(attr as AttributeArgs) {
-        match arg {
-            NestedMeta::Meta(Meta::NameValue(mnv)) => {
-                match mnv.path.get_ident().expect("unexpected path").to_string().as_str() {
-                    "class" => class = match mnv.lit {
-                        Lit::Str(s) => s.value(),
-                        x => panic!("unexpected class value: {:?}", x),
-                    },
-                    "method" => name = match mnv.lit {
-                        Lit::Str(s) => s.parse().unwrap(),
-                        x => panic!("unexpected method name value: {:?}", x),
-                    },
-                    "auth_level" => auth_level = match mnv.lit {
-                        Lit::Str(s) => { let s: Ident = s.parse().unwrap(); quote!(#s) }
-                        x => panic!("unexpected auth_level value: {:?}", x),
-                    },
-                    // This doesn't seem like the best idea, but whatever.
-                    kwkey => {
-                        let kwarg = mnv.lit;
-                        kwargs.insert(parse_quote!(#kwkey), quote!(#kwarg));
-                    }
-                }
-            },
-            x => panic!("unexpected attribute arg: {:?}", x),
-        }
-    }
-
+fn convert_method(
+    name: String,
+    auth_level: TokenStream2,
+    mut kwargs: HashMap<Expr, TokenStream2>,
+    attrs: Vec<Attribute>,
+    vis: Visibility,
+    mut sig: Signature,
+    body: Option<Block>,
+) -> ImplItemMethod {
     let args: Vec<Expr> = sig.inputs
         .iter()
         .skip(1)
@@ -128,7 +235,7 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         ReturnType::Type(_, t) => parse_quote!(-> self::Result<#t>),
     };
 
-    let method_name = format!("{}.{}", class, name);
+    sig.asyncness = parse_quote!(async);
 
     let ret_block = body.unwrap_or(parse_quote!( { return Ok(val); } ));
 
@@ -150,18 +257,18 @@ pub fn rpc_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let body: Block = parse_quote!({
         assert!(self.auth_level >= self::AuthLevel::#auth_level);
-        let #request_pat = self.request::<#request_type, _, _>(#method_name, #args_expr, #kwargs_expr).await?;
+        let #request_pat = self.request::<#request_type, _, _>(#name, #args_expr, #kwargs_expr).await?;
         #nothing_val_stmt
         #ret_block
     });
 
-    let mut stream = TokenStream2::new();
-    attrs.into_iter().for_each(|attr| attr.to_tokens(&mut stream));
-    vis.to_tokens(&mut stream);
-    sig.to_tokens(&mut stream);
-    body.to_tokens(&mut stream);
-
-    stream.into()
+    ImplItemMethod {
+        attrs,
+        vis,
+        defaultness: None,
+        sig,
+        block: body,
+    }
 }
 
 #[proc_macro_derive(Query)]
