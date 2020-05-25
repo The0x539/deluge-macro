@@ -124,7 +124,7 @@ pub fn rpc_class(item: TokenStream) -> TokenStream {
                     other_attrs.push(attr);
                 }
             }
-            let (method_name, auth, kwargs) = process_attr_args(rpc_attr_args, class_name.to_string());
+            let (method_name, auth, kwargs) = process_attr_args(rpc_attr_args, sig.ident.to_string());
             let name = format!("{}.{}", class_name, method_name);
             convert_method(name, auth, kwargs, other_attrs, vis, sig, body)
         } else {
