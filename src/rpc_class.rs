@@ -33,33 +33,56 @@ mod kw {
 }
 
 #[derive(Clone)]
-struct RpcClassMethod {
+struct RpcMethod {
     attrs: Vec<Attribute>,
     vis: Visibility,
-    rpcness: Option<kw::rpc>,
+    rpcness: kw::rpc,
     sig: Signature,
-    body: Option<Block>,
+    semi_token: Token![;],
 }
 
-impl Parse for RpcClassMethod {
+#[derive(Clone)]
+enum RpcClassItem {
+    NormalMethod(ImplItemMethod),
+    RpcMethod(RpcMethod),
+}
+
+impl Parse for RpcClassItem {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let attrs = input.call(Attribute::parse_outer)?;
         let vis = input.parse()?;
-        let rpcness = input.parse()?;
-        let method: TraitItemMethod = input.parse()?;
-        Ok(Self { attrs, vis, rpcness, sig: method.sig, body: method.default })
+        let rpcness: Option<kw::rpc> = input.parse()?;
+        let ret = match rpcness {
+            Some(rpcness) => {
+                let method: TraitItemMethod = input.parse()?;
+                let rpc_method = RpcMethod {
+                    attrs,
+                    vis,
+                    rpcness,
+                    sig: method.sig,
+                    semi_token: method.semi_token.expect("RPC methods cannot have bodies"),
+                };
+                Self::RpcMethod(rpc_method)
+            },
+            None => {
+                let normal_method = ImplItemMethod {
+                    attrs,
+                    vis,
+                    ..input.parse()?
+                };
+                Self::NormalMethod(normal_method)
+            }
+        };
+        Ok(ret)
     }
 }
 
-impl ToTokens for RpcClassMethod {
+impl ToTokens for RpcMethod {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
         self.attrs.iter().for_each(|attr| attr.to_tokens(tokens));
         self.vis.to_tokens(tokens);
         self.sig.to_tokens(tokens);
-        match &self.body {
-            Some(body) => body.to_tokens(tokens),
-            None => quote!(;).to_tokens(tokens),
-        }
+        self.semi_token.to_tokens(tokens);
     }
 }
 
@@ -70,8 +93,8 @@ struct RpcClass {
     struct_name: Ident,
     separator: Token![::],
     class_name: Ident,
-    semicolon_token: Token![;],
-    methods: Vec<RpcClassMethod>,
+    semi_token: Token![;],
+    methods: Vec<RpcClassItem>,
 }
 
 impl Parse for RpcClass {
@@ -82,7 +105,7 @@ impl Parse for RpcClass {
             struct_name: input.parse()?,
             separator: input.parse()?,
             class_name: input.parse()?,
-            semicolon_token: input.parse()?,
+            semi_token: input.parse()?,
             methods: {
                 let mut methods = Vec::new();
                 while !input.is_empty() { methods.push(input.parse()?); }
@@ -112,29 +135,24 @@ pub fn rpc_class(item: TokenStream) -> TokenStream {
 
     let mut converted_methods = Vec::with_capacity(methods.len());
     for method in methods.into_iter() {
-        let converted_method = if method.rpcness.is_some() {
-            let mut rpc_attr_args = Vec::new();
-            let mut other_attrs = Vec::new();
-            let RpcClassMethod { attrs, vis, sig, body, .. } = method;
-            for attr in attrs.into_iter() {
-                if attr.path == parse_quote!(rpc) {
-                    let tokens = attr.tokens.into();
-                    rpc_attr_args.extend(parse_macro_input!(tokens as AttributeTokens).args.into_iter());
-                } else {
-                    other_attrs.push(attr);
+        let converted_method = match method {
+            RpcClassItem::RpcMethod(method) => {
+                let mut rpc_attr_args = Vec::new();
+                let mut other_attrs = Vec::new();
+                let RpcMethod { attrs, vis, sig, .. } = method;
+                for attr in attrs.into_iter() {
+                    if attr.path == parse_quote!(rpc) {
+                        let tokens = attr.tokens.into();
+                        rpc_attr_args.extend(parse_macro_input!(tokens as AttributeTokens).args.into_iter());
+                    } else {
+                        other_attrs.push(attr);
+                    }
                 }
-            }
-            let (method_name, auth, kwargs) = process_attr_args(rpc_attr_args, sig.ident.to_string());
-            let name = format!("{}.{}", class_name, method_name);
-            convert_method(name, auth, kwargs, other_attrs, vis, sig, body)
-        } else {
-            ImplItemMethod {
-                attrs: method.attrs,
-                vis: method.vis,
-                defaultness: None,
-                sig: method.sig,
-                block: method.body.expect("non-RPC methods must have a body"),
-            }
+                let (method_name, auth, kwargs) = process_attr_args(rpc_attr_args, sig.ident.to_string());
+                let name = format!("{}.{}", class_name, method_name);
+                convert_method(name, auth, kwargs, other_attrs, vis, sig)
+            },
+            RpcClassItem::NormalMethod(method) => method,
         };
         converted_methods.push(converted_method);
     }
@@ -186,7 +204,6 @@ fn convert_method(
     attrs: Vec<Attribute>,
     vis: Visibility,
     mut sig: Signature,
-    body: Option<Block>,
 ) -> ImplItemMethod {
     let args: Vec<Expr> = sig.inputs
         .iter()
@@ -233,8 +250,6 @@ fn convert_method(
 
     sig.asyncness = parse_quote!(async);
 
-    let ret_block = body.unwrap_or(parse_quote!( { return Ok(val); } ));
-
     let args_expr = match args.len() {
         0 => quote!([] as [(); 0]),
         _ => quote!((#(#args,)*)),
@@ -255,7 +270,7 @@ fn convert_method(
         assert!(self.auth_level >= self::AuthLevel::#auth_level);
         let #request_pat = self.request::<#request_type, _, _>(#name, #args_expr, #kwargs_expr).await?;
         #nothing_val_stmt
-        #ret_block
+        Ok(val)
     });
 
     ImplItemMethod {
