@@ -163,6 +163,9 @@ fn process_attr_args(
     args: AttributeArgs,
     mut method_name: String,
 ) -> (String, TokenStream2, HashMap<Expr, TokenStream2>) {
+    if method_name.starts_with("_") {
+        method_name.remove(0);
+    }
     let mut auth_level = quote!(default());
     let mut kwargs = HashMap::new();
     for arg in args.into_iter() {
