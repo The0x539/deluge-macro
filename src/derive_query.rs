@@ -61,6 +61,7 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
         .iter()
         .map(|field| &field.ty);
 
+    let idents2 = idents.clone();
     let idents3 = idents.clone();
 
     let ser_fields = item.fields.iter().map(get_key);
@@ -73,6 +74,15 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
         #[serde(default)]
         struct #diff_name {
             #(#idents: ::core::option::Option<#types>,)*
+        }
+        impl #diff_name {
+            fn realize(self) -> ::core::result::Result<#name, &'static str> {
+                Ok(#name {
+                    // yeah, I consume the object and don't give it back on error.
+                    // kinda bad, I realize. I dunno what to tell you.
+                    #(#idents2: self.#idents2.ok_or(stringify!(missing field: #idents2))?,)*
+                })
+            }
         }
         impl self::Query for #name {
             type Diff = #diff_name;
