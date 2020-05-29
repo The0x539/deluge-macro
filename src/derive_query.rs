@@ -87,7 +87,7 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
         impl self::Query for #name {
             type Diff = #diff_name;
             fn keys() -> &'static [&'static str] {
-                &[#(stringify!(#ser_fields)),*]
+                &[#(#ser_fields),*]
             }
             fn update(&mut self, diff: Self::Diff) -> bool {
                 if diff == Self::Diff::default() {
