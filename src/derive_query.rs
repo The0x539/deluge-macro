@@ -1,7 +1,52 @@
 use proc_macro::TokenStream;
 
-use syn::{parse_macro_input, ItemStruct};
+use syn::{
+    parse_macro_input,
+    ItemStruct,
+    NestedMeta,
+    AttributeArgs,
+    Field,
+    parse::{Parse, ParseStream},
+    Meta,
+    Lit,
+};
 use quote::{quote, format_ident};
+
+struct AttrArgs(AttributeArgs);
+
+impl Parse for AttrArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut args = AttributeArgs::new();
+        while !input.is_empty() {
+            args.push(input.parse()?);
+        }
+        Ok(Self(args))
+    }
+}
+
+fn get_key(field: &Field) -> String {
+    for attr in field.attrs.iter() {
+        if let Some(ident) = attr.path.get_ident() {
+            if ident.to_string() == "serde" {
+                let args: AttrArgs = attr.parse_args().unwrap();
+                for arg in args.0.iter() {
+                    match arg {
+                        NestedMeta::Meta(Meta::NameValue(mnv)) => {
+                            if mnv.path.get_ident().unwrap().to_string() == "rename" {
+                                if let Lit::Str(s) = &mnv.lit {
+                                    return s.value();
+                                }
+                            }
+                        },
+                        _ => (),
+                    }
+                }
+            }
+        }
+    }
+
+    return field.ident.as_ref().expect("fields must be named").to_string();
+}
 
 pub fn derive_query(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemStruct);
@@ -16,9 +61,9 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
         .iter()
         .map(|field| &field.ty);
 
+    let idents3 = idents.clone();
 
-    let idents2 = idents.clone(); // again with this. I kinda get it, but... c'mon
-    let idents3 = idents.clone(); // ...
+    let ser_fields = item.fields.iter().map(get_key);
 
     let diff_name = format_ident!("__Diff_{}", name);
 
@@ -32,7 +77,7 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
         impl self::Query for #name {
             type Diff = #diff_name;
             fn keys() -> &'static [&'static str] {
-                &[#(stringify!(#idents2)),*]
+                &[#(stringify!(#ser_fields)),*]
             }
             fn update(&mut self, diff: Self::Diff) -> bool {
                 if diff == Self::Diff::default() {
