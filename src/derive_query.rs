@@ -68,11 +68,13 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
 
     let diff_name = format_ident!("__Diff_{}", name);
 
+    let vis = &item.vis;
+
     let the_impl = quote! {
         #[allow(non_camel_case_types)]
         #[derive(Debug, Clone, Default, PartialEq, ::serde::Deserialize)]
         #[serde(default)]
-        struct #diff_name {
+        #vis struct #diff_name {
             #(#idents: ::core::option::Option<#types>,)*
         }
         impl #diff_name {
