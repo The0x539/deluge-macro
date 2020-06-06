@@ -236,14 +236,9 @@ fn convert_method(
     };
 
     let (request_pat, request_type) = match response_type {
-        ResponseType::Nothing => (quote!([]), quote!([(); 0])),
+        ResponseType::Nothing => (quote!([val]), quote!([(); 1])),
         ResponseType::Single(ty) => (quote!([val]), quote!([#ty; 1])),
         ResponseType::Compound(ty) => (quote!(val), quote!(#ty)),
-    };
-
-    let nothing_val_stmt = match response_type {
-        ResponseType::Nothing => quote!(let val = ();),
-        _ => quote!(),
     };
 
     sig.output = match sig.output {
@@ -272,7 +267,6 @@ fn convert_method(
     let body: Block = parse_quote!({
         assert!(self.auth_level >= self::AuthLevel::#auth_level);
         let #request_pat = self.request::<#request_type, _, _>(#name, #args_expr, #kwargs_expr).await?;
-        #nothing_val_stmt
         Ok(val)
     });
 
