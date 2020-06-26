@@ -12,41 +12,19 @@ pub fn rpc_events(_: TokenStream, item: TokenStream) -> TokenStream {
 
     let untuple_impl = quote! {
         impl #name {
-            fn __untuple1<'de, D: ::serde::Deserializer<'de>, T: ::serde::Deserialize<'de>>(
-                de: D,
-            ) -> ::core::result::Result<T, D::Error> {
-                struct UntupleVisitor<'de, T: ::serde::Deserialize<'de>>(::core::marker::PhantomData<(T, &'de ())>);
-                impl<'de, T: ::serde::Deserialize<'de>> ::serde::de::Visitor<'de> for UntupleVisitor<'de, T> {
-                    type Value = T;
-                    fn expecting(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-                        f.write_str("a sequence containing a single value")
-                    }
-                    fn visit_seq<A: ::serde::de::SeqAccess<'de>>(self, mut seq: A) -> ::core::result::Result<T, A::Error> {
-                        seq.next_element()?.ok_or(::serde::de::Error::invalid_length(0, &"1"))
-                    }
-                }
-                de.deserialize_tuple(1, UntupleVisitor(::core::marker::PhantomData::default()))
+            fn __untuple1<'de, D, T>(de: D) -> ::core::result::Result<T, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+                T: ::serde::Deserialize<'de>,
+            {
+                <[T; 1]>::deserialize(de).map(|[v]| v)
             }
 
-            fn __untuple0<'de, D: ::serde::Deserializer<'de>>(de: D) -> ::core::result::Result<(), D::Error> {
-                struct UnitVisitor;
-                impl<'de> ::serde::de::Visitor<'de> for UnitVisitor {
-                    type Value = ();
-                    fn expecting(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-                        f.write_str("an empty list")
-                    }
-                    fn visit_seq<A: ::serde::de::SeqAccess<'de>>(self, mut seq: A) -> ::core::result::Result<(), A::Error> {
-                        match seq.size_hint() {
-                            Some(0) => Ok(()),
-                            Some(n) => Err(::serde::de::Error::invalid_length(n, &self)),
-                            None => match seq.next_element::<self::Value>()? {
-                                None => Ok(()),
-                                Some(_) => Err(::serde::de::Error::invalid_value(::serde::de::Unexpected::Seq, &self)),
-                            }
-                        }
-                    }
-                }
-                de.deserialize_tuple(0, UnitVisitor)
+            fn __untuple0<'de, D>(de: D) -> ::core::result::Result<(), D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                <[(); 0]>::deserialize(de).map(|_| ())
             }
         }
     };
