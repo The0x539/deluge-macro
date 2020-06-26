@@ -67,15 +67,28 @@ pub fn derive_query(item: TokenStream) -> TokenStream {
     let ser_fields = item.fields.iter().map(get_key);
 
     let diff_name = format_ident!("__Diff_{}", name);
+    let deserialize_some_name = format_ident!("__deserialize_value_as_some_for_{}", name);
+    let deserialize_some_name_str = deserialize_some_name.to_string();
 
     let vis = &item.vis;
 
     let the_impl = quote! {
+        #[allow(non_snake_case)]
+        #vis fn #deserialize_some_name<'de, D, T>(de: D) -> ::core::result::Result<::core::option::Option<T>, D::Error>
+        where
+            D: ::serde::Deserializer<'de>,
+            T: ::serde::Deserialize<'de>,
+        {
+            T::deserialize(de).map(::core::option::Option::Some)
+        }
         #[allow(non_camel_case_types)]
         #[derive(Debug, Clone, Default, PartialEq, ::serde::Deserialize)]
         #[serde(default)]
         #vis struct #diff_name {
-            #(#idents: ::core::option::Option<#types>,)*
+            #(
+                #[serde(deserialize_with = #deserialize_some_name_str)]
+                #idents: ::core::option::Option<#types>,
+            )*
         }
         impl #diff_name {
             fn realize(self) -> ::core::result::Result<#name, &'static str> {
